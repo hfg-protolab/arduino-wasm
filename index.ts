@@ -1,0 +1,10 @@
+export * from "./src/types";
+export * from "./src/ino";
+export * from "./src/elf";
+export * from "./src/hex";
+export * from "./src/esp-image";
+export * from "./src/size";
+export * from "./src/ar";
+export { compileFirmware, prewarm, resetCompilers, inlineExecutor, UnknownBoardError, type CompileOptions, type CompileResult, type ToolExecutor } from "./src/compile";
+export { createCompilerWorker, createWorkerPool, type CompilerWorker, type WorkerPool, type WorkerCompileOptions } from "./src/pool";
+export type { BoardManifest, PackIndex, LibraryEntry, LinkIndex, FileRef } from "./src/manifest";

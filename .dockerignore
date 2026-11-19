@@ -1,0 +1,9 @@
+# Used when this checkout is a Docker build context (e.g. the AI Hub frontend image's
+# `--build-context arduino-wasm=…`): only the runtime sources are needed there.
+.build/
+node_modules/
+spike/
+test/
+test-fixtures/
+toolchains/
+pack/pio-image/

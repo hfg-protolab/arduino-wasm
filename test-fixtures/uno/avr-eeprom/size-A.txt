@@ -1,0 +1,11 @@
+firmware.elf  :
+section                    size      addr
+.data                        30   8388864
+.text                      3528         0
+.bss                        238   8388894
+.eeprom                       9   8454144
+.comment                     17         0
+.note.gnu.avr.deviceinfo     64         0
+Total                      3886
+
+

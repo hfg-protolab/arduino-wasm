@@ -1,0 +1,9 @@
+# Libraries preinstalled in the pio-image (/opt/pio-libs/<dir>). Format: <storage dir> <pio
+# package spec>. Dependencies (Adafruit GFX, BusIO) are resolved at image build time. Keep in
+# sync with "libraries" in pack/config.json.
+all adafruit/Adafruit NeoPixel@1.15.5
+all adafruit/DHT sensor library@1.4.7
+all adafruit/Adafruit Unified Sensor@1.1.15
+all marcoschwartz/LiquidCrystal_I2C@1.1.4
+all adafruit/Adafruit SSD1306@2.5.17
+esp32 madhephaestus/ESP32Servo@3.2.1

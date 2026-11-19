@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AVR wasm spike</title>
+<pre id="log"></pre>
+<script type="module">
+// Runs plan.json (cc1plus → as → ld) with MEMFS only, like the later Web Worker would.
+const log = (s) => (document.getElementById("log").textContent += s + "\n");
+const job = await (await fetch("/job.json")).json();
+const t = (from) => Math.round((performance.now() - from) * 10) / 10;
+const result = { timings: [], rounds: [] };
+
+// bundle (headers, sources, link inputs)
+let t0 = performance.now();
+const files = new Map();
+await Promise.all(job.bundle.map(async (p) => files.set(p, new Uint8Array(await (await fetch("/fs?p=" + encodeURIComponent(p))).arrayBuffer()))));
+result.timings.push({ step: "fetch bundle", ms: t(t0), files: files.size });
+
+// tools: compileStreaming + factory source
+const tools = {};
+for (const name of ["cc1plus", "as", "ld"]) {
+    t0 = performance.now();
+    const mod = await WebAssembly.compileStreaming(fetch(`/tools/${name}.wasm`));
+    const src = await (await fetch(`/tools/${name}.js`)).text();
+    const factory = new Function(src + "\nreturn createTool;")();
+    tools[name] = { mod, factory };
+    result.timings.push({ step: `compileStreaming ${name}`, ms: t(t0) });
+}
+
+const produced = new Map(); // outputs of earlier steps (.s, .o) handed to later instances
+async function run(name, argv) {
+    const { mod, factory } = tools[name];
+    const out = [];
+    const t0 = performance.now();
+    const M = await factory({
+        instantiateWasm(imports, done) { WebAssembly.instantiate(mod, imports).then((i) => done(i, mod)); return {}; },
+        thisProgram: `/${name}/${name}`,
+        print: (s) => out.push(s), printErr: (s) => out.push(s),
+        quit: (status, e) => { throw e; },
+    });
+    const tInst = performance.now();
+    const FS = M.FS;
+    const put = (p, d) => { FS.mkdirTree(p.slice(0, p.lastIndexOf("/")) || "/"); FS.writeFile(p, d); };
+    if (name === "ld") put("/ld/ldscripts/avr5.xn", files.get(job.ldscript));
+    for (const [p, d] of files) if (name === "ld" ? /\.(a|o)$/.test(p) : !/\.(a|o|xn)$/.test(p)) put(p, d);
+    for (const [p, d] of produced) put(p, d);
+    // paths like <tc>/bin/../lib/gcc/avr/7.3.0/ (-iprefix) only resolve if every component exists
+    for (const a of argv) if (a.startsWith("/") && a.includes("/..")) FS.mkdirTree(a.slice(0, a.indexOf("/..")));
+    for (const a of argv) if (a.startsWith(job.out)) FS.mkdirTree(a.slice(0, a.lastIndexOf("/")));
+    FS.mkdirTree(job.project); FS.chdir(job.project);
+    const tFs = performance.now();
+    let code;
+    try { code = M.callMain([...argv]); } catch (e) { code = e?.status ?? -1; out.push(String(e)); }
+    const tRun = performance.now();
+    const oIdx = argv.indexOf("-o");
+    if (oIdx >= 0) produced.set(argv[oIdx + 1], FS.readFile(argv[oIdx + 1]));
+    if (code !== 0) throw new Error(`${name} exited ${code}: ${out.join("\n")}`);
+    return { instMs: Math.round((tInst - t0) * 10) / 10, fsMs: Math.round((tFs - tInst) * 10) / 10, runMs: Math.round((tRun - tFs) * 10) / 10, heapMB: M.HEAPU8.length / 2 ** 20 };
+}
+
+try {
+    for (let r = 0; r < job.rounds; r++) {
+        const steps = [];
+        const tr = performance.now();
+        for (const j of job.plan.jobs) for (const s of j.steps) steps.push({ tool: s.tool, ...(await run(s.tool, s.args)) });
+        for (const s of job.plan.linkSteps) steps.push({ tool: s.tool, ...(await run(s.tool, s.args)) });
+        result.rounds.push({ totalMs: t(tr), steps });
+        log(JSON.stringify(result.rounds.at(-1)));
+    }
+    // ELF → Intel HEX is done natively by the server-side comparison: send the ELF
+    const elf = produced.get(job.plan.linkSteps[0].args[job.plan.linkSteps[0].args.indexOf("-o") + 1]);
+    result.elfBytes = elf.length;
+    result.elfB64 = btoa(String.fromCharCode(...elf));
+    result.userAgent = navigator.userAgent;
+} catch (e) { result.error = String(e.stack ?? e); }
+await fetch("/result", { method: "POST", body: JSON.stringify(result) });
+</script>

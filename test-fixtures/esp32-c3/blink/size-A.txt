@@ -1,0 +1,26 @@
+firmware.elf  :
+section                  size         addr
+.rtc.text                  16   1342177280
+.rtc.force_fast             0   1342177296
+.rtc_noinit                16   1342177296
+.rtc.force_slow             0   1342177312
+.iram0.text             47012   1077411840
+.dram0.dummy            47104   1070071808
+.dram0.data              7548   1070118912
+.noinit                     0   1070126460
+.dram0.bss               6448   1070126464
+.flash.text            159758   1107296288
+.flash_rodata_dummy    196608   1006632992
+.flash.appdesc            256   1006829600
+.flash.rodata           44992   1006829856
+.eh_frame               11160   1006874848
+.flash.rodata_noload        0   1006886008
+.iram0.text_end            92   1077458852
+.iram0.data                 0   1077458944
+.iram0.bss                  0   1077458944
+.dram0.heap_start           0   1070132912
+.comment                   93            0
+.riscv.attributes          55            0
+Total                  521158
+
+

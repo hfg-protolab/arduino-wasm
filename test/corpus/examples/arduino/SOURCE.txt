@@ -1,0 +1,4 @@
+Arduino's built-in examples 01.Basics, 02.Digital, 03.Analog and 04.Communication (sources only,
+no images/Processing/Max patches), copied from Arduino IDE 2.x
+(Contents/Resources/app/lib/backend/resources/Examples), upstream https://github.com/arduino/arduino-examples.
+The examples are in the public domain (CC0, see the upstream repository).

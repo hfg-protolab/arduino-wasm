@@ -1,0 +1,85 @@
+PCH for an Emscripten (wasm32) host.
+
+GCC 8 cannot relocate a precompiled header: the data must come back at the address it was
+written for. wasm linear memory has no mmap at a chosen address (Emscripten's mmap ignores the
+hint), and host-linux.c's TRY_EMPTY_VM_SPACE is 0 for wasm32. Instead a startup constructor
+reserves one arena. Startup is deterministic for a given binary (same constructors, same
+allocations, argv is copied only afterwards in callMain), so the arena has the same address when
+the PCH is written and when it is read back; GCC's own executable checksum ties a .gch to exactly
+this binary anyway. A compile that does not load a PCH frees the arena (use_address with size 0,
+from c_common_no_more_pch), so it costs nothing but address space.
+
+--- a/gcc/config/host-linux.c
++++ b/gcc/config/host-linux.c
+@@ -23,6 +23,64 @@
+ #include "hosthooks.h"
+ #include "hosthooks-def.h"
+ 
++#ifdef __EMSCRIPTEN__
++#ifndef EM_PCH_ARENA_MB
++#define EM_PCH_ARENA_MB 96
++#endif
++
++static const size_t em_pch_arena_size = (size_t) EM_PCH_ARENA_MB << 20;
++/* The arena while it is allocated, and its address forever (a PCH being written only needs
++   the number).  */
++static void *em_pch_raw;
++static void *em_pch_arena;
++static void *em_pch_base;
++
++__attribute__((constructor)) static void
++em_pch_reserve (void)
++{
++  /* system.h poisons malloc & co.; xmalloc plus manual 64 KiB alignment.  */
++  em_pch_raw = xmalloc (em_pch_arena_size + 65536);
++  em_pch_arena = (void *) (((uintptr_t) em_pch_raw + 65535) & ~(uintptr_t) 65535);
++  em_pch_base = em_pch_arena;
++}
++
++static void *
++em_gt_pch_get_address (size_t size, int fd ATTRIBUTE_UNUSED)
++{
++  return size <= em_pch_arena_size ? em_pch_base : NULL;
++}
++
++/* 0: memory is at BASE, read the file into it; -1: cannot.  */
++static int
++em_gt_pch_use_address (void *base, size_t size, int fd ATTRIBUTE_UNUSED,
++		       size_t offset ATTRIBUTE_UNUSED)
++{
++  if (size == 0)
++    {
++      free (em_pch_raw);
++      em_pch_raw = em_pch_arena = NULL;
++      return -1;
++    }
++  if (em_pch_arena == NULL || base != em_pch_arena || size > em_pch_arena_size)
++    return -1;
++  return 0;
++}
++
++static size_t
++em_gt_pch_alloc_granularity (void)
++{
++  return 65536;
++}
++
++#undef HOST_HOOKS_GT_PCH_GET_ADDRESS
++#define HOST_HOOKS_GT_PCH_GET_ADDRESS em_gt_pch_get_address
++#undef HOST_HOOKS_GT_PCH_USE_ADDRESS
++#define HOST_HOOKS_GT_PCH_USE_ADDRESS em_gt_pch_use_address
++#undef HOST_HOOKS_GT_PCH_ALLOC_GRANULARITY
++#define HOST_HOOKS_GT_PCH_ALLOC_GRANULARITY em_gt_pch_alloc_granularity
++#else /* !__EMSCRIPTEN__ */
++
++
+ 
+ /* Linux has a feature called exec-shield-randomize that perturbs the
+    address of non-fixed mapped segments by a (relatively) small amount.
+@@ -227,4 +285,6 @@
+ }
+ 
+ 
++#endif /* !__EMSCRIPTEN__ */
++
+ const struct host_hooks host_hooks = HOST_HOOKS_INITIALIZER;

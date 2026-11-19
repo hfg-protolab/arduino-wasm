@@ -1,0 +1,42 @@
+{
+    "name": "arduino-wasm",
+    "version": "0.1.0",
+    "description": "Compile Arduino/ESP32 sketches in the browser: GCC/binutils as WebAssembly, prebuilt packs, PlatformIO-identical output.",
+    "type": "module",
+    "private": true,
+    "types": "./index.ts",
+    "main": "./index.ts",
+    "exports": {
+        ".": "./index.ts",
+        "./types": "./src/types.ts",
+        "./ino": "./src/ino.ts",
+        "./elf": "./src/elf.ts",
+        "./hex": "./src/hex.ts",
+        "./esp-image": "./src/esp-image.ts",
+        "./size": "./src/size.ts",
+        "./ar": "./src/ar.ts",
+        "./compile": "./src/compile.ts",
+        "./worker": "./src/worker.ts",
+        "./pool": "./src/pool.ts",
+        "./manifest": "./src/manifest.ts",
+        "./resolve": "./src/resolve.ts",
+        "./ldf": "./src/ldf.ts",
+        "./driver": "./src/driver.ts"
+    },
+    "scripts": {
+        "test": "bun test src test",
+        "typecheck": "tsc --noEmit -p .",
+        "fixtures": "scripts/generate-fixtures.sh",
+        "test:unit": "bun test src",
+        "test:e2e": "bun test test/e2e.test.ts",
+        "test:corpus": "bun test/corpus/run.ts",
+        "pack": "bun pack/build.ts",
+        "pack:compress": "bun pack/compress.ts",
+        "bench:browser": "bun test/browser/server.ts"
+    },
+    "license": "MIT",
+    "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "5"
+    }
+}

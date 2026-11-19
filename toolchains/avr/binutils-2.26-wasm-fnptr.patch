@@ -1,0 +1,34 @@
+--- a/gas/config/obj-elf.c
++++ b/gas/config/obj-elf.c
+@@ -79,6 +79,11 @@
+ static void obj_elf_lcomm (int);
+ static void obj_elf_struct (int);
+ 
++/* wasm: call through the exact pseudo-op signature (indirect calls are type-checked). */
++static void obj_elf_vtable_inherit_wasm (int i) { obj_elf_vtable_inherit (i); }
++static void obj_elf_vtable_entry_wasm (int i) { obj_elf_vtable_entry (i); }
++static void obj_elf_dwarf2_file_wasm (int i) { dwarf2_directive_file (i); }
++
+ static const pseudo_typeS elf_pseudo_table[] =
+ {
+   {"comm", obj_elf_common, 0},
+@@ -113,8 +118,8 @@
+   {"subsection", obj_elf_subsection, 0},
+ 
+   /* These are GNU extensions to aid in garbage collecting C++ vtables.  */
+-  {"vtable_inherit", (void (*) (int)) &obj_elf_vtable_inherit, 0},
+-  {"vtable_entry", (void (*) (int)) &obj_elf_vtable_entry, 0},
++  {"vtable_inherit", obj_elf_vtable_inherit_wasm, 0},
++  {"vtable_entry", obj_elf_vtable_entry_wasm, 0},
+ 
+   /* A GNU extension for object attributes.  */
+   {"gnu_attribute", obj_elf_gnu_attribute, 0},
+@@ -124,7 +129,7 @@
+   {"4byte", cons, 4},
+   {"8byte", cons, 8},
+   /* These are used for dwarf2.  */
+-  { "file", (void (*) (int)) dwarf2_directive_file, 0 },
++  { "file", obj_elf_dwarf2_file_wasm, 0 },
+   { "loc",  dwarf2_directive_loc,  0 },
+   { "loc_mark_labels", dwarf2_directive_loc_mark_labels, 0 },
+ 

@@ -1,0 +1,69 @@
+{
+  "$comment": "Corresponding source for the WebAssembly toolchains in .build/toolchains/<id> (GPL source offer). Every archive is fetched by the Dockerfile from the URL below and checked against the SHA-256. Human-readable version: README.md.",
+  "hostCompiler": {
+    "image": "emscripten/emsdk:4.0.10-arm64",
+    "digest": "sha256:46566098d0e12a11aed071a4aaa20e6a626ab3d011a246846ae2423a21b659d9",
+    "amd64Equivalent": "emscripten/emsdk:4.0.10 (sha256:90b757eb11fa9a0e3ce4d2d9f76d932a56018e4accc37b5a28b2783751e60eb7, not verified bit-identical)"
+  },
+  "toolchains": {
+    "avr": {
+      "dockerfile": "toolchains/avr/Dockerfile",
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/avr toolchains/avr",
+      "target": "avr",
+      "matches": "PlatformIO toolchain-atmelavr@1.70300.191015 (atmelavr@5.3.0)",
+      "programs": ["cc1", "cc1plus", "as", "ld"],
+      "recipe": { "url": "https://github.com/arduino/toolchain-avr", "tag": "7.3.0-atmel3.6.1-arduino7", "commit": "368b87a73e3677071fa44f2182c1ea4cc6a90557", "files": ["gcc.build.bash", "binutils.build.bash"] },
+      "sources": [
+        { "name": "gcc", "version": "7.3.0", "url": "https://ftp.gnu.org/gnu/gcc/gcc-7.3.0/gcc-7.3.0.tar.xz", "sha256": "832ca6ae04636adbb430e865a1451adf6979ab44ca1c8374f61fba65645ce15c" },
+        { "name": "binutils (Atmel AVR toolchain 3.6.1)", "version": "2.26.20160125", "url": "http://downloads.arduino.cc/tools/opensource/Atmel-AVR-GNU-Toolchain/3.6.1/avr-binutils.tar.bz2", "sha256": "7f2ee50c3867ca13be47aee7925c4c9182b15cb5fe6ace23849ee9005081a340" },
+        { "name": "gmp", "version": "6.1.2", "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.1.2.tar.xz", "sha256": "87b565e89a9a684fe4ebeeddb8399dce2599f9c9049854ca8c0dfbdea0e21912" },
+        { "name": "mpfr", "version": "3.1.6", "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-3.1.6.tar.xz", "sha256": "7a62ac1a04408614fccdc506e4844b10cf0ad2c2b1677097f8f35d3a1344a950" },
+        { "name": "mpc", "version": "1.0.3", "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.0.3.tar.gz", "sha256": "617decc6ea09889fb08ede330917a00b16809b8db88c29c31bfbb49cbf88ecc3" }
+      ],
+      "patches": [
+        { "file": "atmel-patches-gcc.7.3.0-arduino2.patch", "origin": "upstream (Arduino)", "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/avr-gcc-patches/atmel-patches-gcc.7.3.0-arduino2.patch", "sha256": "96782c75dd11e994e1ab9250c41fc5cd81ba65bbcf44383cd9d660d01cc85f97", "appliesTo": "gcc" },
+        { "file": "00-binutils-data_region_length.patch", "origin": "upstream (Arduino)", "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/binutils-patches/00-binutils-data_region_length.patch", "sha256": "d9e9f183bad9e1cfe27f3569163ccd3c39b1784b12978b47a2206eb31e2547e8", "appliesTo": "binutils" },
+        { "file": "toolchains/avr/binutils-2.26-wasm-fnptr.patch", "origin": "ours", "appliesTo": "binutils (gas)", "purpose": "pseudo-op handlers cast to void(*)(int) trap under wasm's typed indirect calls" }
+      ],
+      "configure": {
+        "binutils": "--host=i686-pc-linux-gnu --target=avr --disable-nls --disable-werror --disable-shared --disable-plugins --disable-gdb --disable-sim --disable-readline --disable-libdecnumber --without-zlib (ld linked with -sEMULATE_FUNCTION_POINTER_CASTS=1)",
+        "gcc": "--host=i686-pc-linux-gnu --target=avr --enable-fixed-point --enable-languages=c,c++ --disable-nls --disable-shared --disable-plugin --disable-lto --disable-libssp --disable-libada --disable-libcc1 --without-isl --with-avrlibc=yes --with-dwarf2 --disable-bootstrap --enable-checking=release --with-gnu-as --with-gnu-ld --with-as=<native avr-as> --with-ld=<native avr-ld>"
+      }
+    },
+    "esp32": { "chip": "esp32", "target": "xtensa-esp32-elf", "overlay": "xtensa_esp32", "extraConfigure": [],
+      "matches": "PlatformIO toolchain-xtensa-esp32@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
+      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "8ef14e0409c2011b41e504a30f70d3e35287313a795d1f2462ad2cd0e2052d37" },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32 toolchains/esp" },
+    "esp32s3": { "chip": "esp32s3", "target": "xtensa-esp32s3-elf", "overlay": "xtensa_esp32s3", "extraConfigure": [],
+      "matches": "PlatformIO toolchain-xtensa-esp32s3@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
+      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32s3-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "8aa17a6adf01efa5b1628c8ac578063a44d26ae9581d39486b92223a41ef262f" },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32s3 --build-arg CHIP=esp32s3 toolchains/esp" },
+    "esp32c3": { "chip": "esp32c3", "target": "riscv32-esp-elf", "overlay": null, "extraConfigure": ["--with-arch=rv32gc", "--with-abi=ilp32"],
+      "matches": "PlatformIO toolchain-riscv32-esp@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
+      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "f7d73e5f9e2df3ea6ca8e2c95d6ca6d23d6b38fd101ea5d3012f3cb3cd59f39f" },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32c3 --build-arg CHIP=esp32c3 toolchains/esp" }
+  },
+  "esp": {
+    "$comment": "Shared by esp32, esp32s3, esp32c3 (toolchains/esp, CHIP build arg).",
+    "dockerfile": "toolchains/esp/Dockerfile",
+    "script": "toolchains/esp/build.sh",
+    "programs": ["cc1", "cc1plus", "as", "ld"],
+    "recipe": { "url": "https://github.com/espressif/crosstool-NG", "tag": "esp-2021r2-patch5", "commit": "7dbd58403d012a07ee046836f625985396cfc1ca", "files": ["samples/xtensa-esp32-elf/crosstool.config", "samples/xtensa-esp32s3-elf/crosstool.config", "samples/riscv32-esp-elf/crosstool.config"] },
+    "sources": [
+      { "name": "gcc (Espressif fork)", "version": "8.4.0", "url": "https://github.com/espressif/gcc/archive/refs/tags/esp-2021r2-patch4.tar.gz", "tag": "esp-2021r2-patch4", "commit": "3b3d328ad0dfd53636d2d54e98b77bfcdacefac4", "sha256": "6baba8db4731a91d825e9b1f44f2a9128c6dae51074ef7b9d5318174c27fec1f" },
+      { "name": "binutils (Espressif fork)", "version": "2.35.1", "url": "https://github.com/espressif/binutils-gdb/archive/refs/tags/esp-2021r2-patch4-binutils.tar.gz", "tag": "esp-2021r2-patch4-binutils", "commit": "df444b49d425e05f538d7875f8e2162771c74a51", "sha256": "542a3c96f3f2dc692815ba47b60f02dc55544e69f94267112f9ded53c94242be" },
+      { "name": "xtensa-overlays", "url": "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz", "commit": "dd1cf19f6eb327a9db51043439974a6de13f5c7f", "sha256": "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56" },
+      { "name": "gmp", "version": "6.2.1", "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz", "sha256": "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2" },
+      { "name": "mpfr", "version": "4.1.0", "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-4.1.0.tar.xz", "sha256": "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f" },
+      { "name": "mpc", "version": "1.2.1", "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.2.1.tar.gz", "sha256": "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459" }
+    ],
+    "patches": [
+      { "file": "toolchains/esp/patches/gcc-8-pch-emscripten.patch", "origin": "ours", "appliesTo": "gcc (gcc/config/host-linux.c)", "purpose": "PCH on wasm32: fixed arena reserved at startup instead of mmap at a chosen address" }
+    ],
+    "configure": {
+      "binutils": "--host=i686-pc-linux-gnu --target=<target> --disable-nls --disable-werror --disable-shared --disable-plugins --disable-gdb --disable-sim --disable-gprof --disable-readline --disable-libdecnumber --without-zlib --with-pkgversion='crosstool-NG esp-2021r2-patch5'",
+      "gcc": "--host=i686-pc-linux-gnu --target=<target> --with-local-prefix=<prefix>/<target> --with-headers=<prefix>/<target>/include --with-newlib --enable-threads=no --disable-shared <extraConfigure> --with-pkgversion='crosstool-NG esp-2021r2-patch5' --disable-__cxa_atexit --enable-cxx-flags=-ffunction-sections --disable-libgomp --disable-libmudflap --disable-libmpx --disable-libssp --disable-libquadmath --disable-libquadmath-support --disable-libstdcxx-verbose --without-isl --disable-lto --disable-plugin --enable-target-optspace --without-long-double-128 --disable-nls --enable-multiarch --enable-languages=c,c++ --enable-threads=posix --enable-gcov-custom-rtio --enable-libstdcxx-time=yes --disable-bootstrap --enable-checking=release --with-as=<native target as> --with-ld=<native target ld>",
+      "deviationsFromNative": "--disable-lto --disable-plugin --without-isl (native: --enable-lto --with-isl); prefix; host. None changes generated code (verified byte-identical)."
+    }
+  }
+}
