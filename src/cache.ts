@@ -26,6 +26,14 @@ export class PackStore {
     private fetchFn: Fetch;
     private useCaches: boolean;
     private bytes = new Map<string, Promise<Uint8Array>>();
+    /**
+     * Byte progress per file while it loads, shared by every caller: a compile that starts while
+     * a prewarm is still downloading the same file `watch`es it and first hears the bytes that
+     * already arrived, then each new chunk. Content-addressed key (sha256).
+     */
+    private loading = new Map<string, { got: number; fns: Set<(n: number) => void> }>();
+    /** Files fully loaded (bytes kept in memory, or a wasm module compiled). */
+    private loaded = new Set<string>();
     private jsonCache = new Map<string, Promise<unknown>>();
     /** Bytes that came over the network since construction. */
     downloaded = 0;
@@ -44,8 +52,40 @@ export class PackStore {
         return new URL(file, this.baseUrl).toString();
     }
 
+    /** True once the file has fully arrived; a file still loading is not "had" (see `watch`). */
     has(ref: FileRef): boolean {
-        return this.bytes.has(ref.sha256);
+        return this.loaded.has(ref.sha256);
+    }
+
+    /**
+     * Report the bytes of `ref` to `onBytes`: those that already arrived (if it is loading), then
+     * every further chunk, until it is loaded. Nothing for a file that has already loaded. Works
+     * before the load starts, too (the load then reports into the same listeners).
+     */
+    watch(ref: FileRef, onBytes: (n: number) => void): void {
+        if (this.loaded.has(ref.sha256)) return;
+        const e = this.progressOf(ref.sha256);
+        if (e.got) onBytes(e.got);
+        e.fns.add(onBytes);
+    }
+
+    private progressOf(sha: string) {
+        let e = this.loading.get(sha);
+        if (!e) this.loading.set(sha, (e = { got: 0, fns: new Set() }));
+        return e;
+    }
+
+    /** A chunk of `sha` arrived (network or Cache Storage). */
+    private chunk(sha: string, n: number, network: boolean) {
+        if (network) this.downloaded += n;
+        const e = this.progressOf(sha);
+        e.got += n;
+        for (const fn of e.fns) fn(n);
+    }
+
+    private settle(sha: string, ok: boolean) {
+        this.loading.delete(sha);
+        if (ok) this.loaded.add(sha);
     }
 
     private async open(file: string): Promise<{ res: Response; network: boolean }> {
@@ -90,20 +130,24 @@ export class PackStore {
 
     /** File bytes; `onBytes` sees every chunk that arrives over the network or from Cache Storage. */
     get(ref: FileRef, onBytes?: (n: number) => void): Promise<Uint8Array> {
+        if (onBytes) this.watch(ref, onBytes);
         let p = this.bytes.get(ref.sha256);
         if (!p) {
             p = (async () => {
                 const { res, network } = await this.open(ref.file);
-                const data = await readCounting(res, ref.size, (n) => {
-                    if (network) this.downloaded += n;
-                    onBytes?.(n);
-                });
+                const data = await readCounting(res, ref.size, (n) => this.chunk(ref.sha256, n, network));
                 if (network) void this.remember(ref.file, data, res.headers.get("content-type") ?? "application/octet-stream");
                 return data;
             })();
-            p.catch(() => this.bytes.delete(ref.sha256));
+            p.then(
+                () => this.settle(ref.sha256, true),
+                () => {
+                    this.bytes.delete(ref.sha256);
+                    this.settle(ref.sha256, false);
+                },
+            );
             this.bytes.set(ref.sha256, p);
-        } else if (onBytes) void p.then(() => undefined);
+        }
         return p;
     }
 
@@ -113,21 +157,27 @@ export class PackStore {
      * also goes into Cache Storage.
      */
     async wasm(ref: FileRef, onBytes?: (n: number) => void): Promise<WebAssembly.Module> {
+        if (onBytes) this.watch(ref, onBytes);
+        try {
+            const mod = await this.wasmOnce(ref);
+            this.settle(ref.sha256, true);
+            return mod;
+        } catch (err) {
+            this.settle(ref.sha256, false);
+            throw err;
+        }
+    }
+
+    private async wasmOnce(ref: FileRef): Promise<WebAssembly.Module> {
         const { res, network } = await this.open(ref.file);
         const streaming = typeof WebAssembly.compileStreaming === "function" && res.body && res.headers.get("content-type")?.startsWith("application/wasm");
         if (!streaming || !res.body) {
-            const data = await readCounting(res, ref.size, (n) => {
-                if (network) this.downloaded += n;
-                onBytes?.(n);
-            });
+            const data = await readCounting(res, ref.size, (n) => this.chunk(ref.sha256, n, network));
             if (network) void this.remember(ref.file, data, "application/wasm");
             return WebAssembly.compile(data as BufferSource);
         }
         const copy = res.clone();
-        const counted = readCounting(copy, ref.size, (n) => {
-            if (network) this.downloaded += n;
-            onBytes?.(n);
-        }).then((data) => {
+        const counted = readCounting(copy, ref.size, (n) => this.chunk(ref.sha256, n, network)).then((data) => {
             if (network) void this.remember(ref.file, data, "application/wasm");
         });
         const [mod] = await Promise.all([WebAssembly.compileStreaming(res), counted]);

@@ -80,12 +80,12 @@ class Compiler {
         return p;
     }
 
-    tool(m: BoardManifest, name: ToolName, onBytes?: (n: number) => void): Promise<LoadedTool> {
+    tool(m: BoardManifest, name: ToolName): Promise<LoadedTool> {
         const ref = m.tools[name];
         let p = this.tools.get(ref.wasm.sha256);
         if (!p) {
             p = (async () => {
-                const [js, mod] = await Promise.all([this.store.get(ref.js, onBytes), this.store.wasm(ref.wasm, onBytes)]);
+                const [js, mod] = await Promise.all([this.store.get(ref.js), this.store.wasm(ref.wasm)]);
                 const t = await loadTool(name, new TextDecoder().decode(js), mod);
                 t.id = ref.wasm.sha256;
                 return t;
@@ -96,13 +96,13 @@ class Compiler {
         return p;
     }
 
-    headers(m: BoardManifest, onBytes?: (n: number) => void): Promise<Map<string, Uint8Array>> {
+    headers(m: BoardManifest): Promise<Map<string, Uint8Array>> {
         const key = m.headers.map((h) => h.sha256).join(",");
         let p = this.headerSets.get(key);
         if (!p) {
             p = (async () => {
                 const map = new Map<string, Uint8Array>();
-                const blobs = await Promise.all(m.headers.map((h) => this.store.get(h, onBytes)));
+                const blobs = await Promise.all(m.headers.map((h) => this.store.get(h)));
                 for (const b of blobs) for (const e of readBundle(b)) map.set(e.path, e.data);
                 tagFileset(map, `headers:${key}`);
                 return map;
@@ -113,12 +113,12 @@ class Compiler {
         return p;
     }
 
-    lazy(m: BoardManifest, onBytes?: (n: number) => void) {
+    lazy(m: BoardManifest) {
         const lz = m.link.lazy!;
         let p = this.linkIndex.get(lz.index.sha256);
         if (!p) {
             p = (async () => {
-                const [idx, base] = await Promise.all([this.store.get(lz.index, onBytes), this.store.get(lz.base, onBytes)]);
+                const [idx, base] = await Promise.all([this.store.get(lz.index), this.store.get(lz.base)]);
                 const index = JSON.parse(new TextDecoder().decode(idx)) as LinkIndex;
                 const map = new Map<string, Uint8Array>();
                 for (const e of readBundle(base)) map.set(e.path, e.data);
@@ -177,6 +177,17 @@ function progressTracker(onProgress: CompileOptions["onProgress"]) {
     };
 }
 
+/**
+ * Count every file of `refs` that has not fully loaded yet into the progress total, and follow
+ * its bytes — including files another call (a prewarm) is already downloading, whose bytes so
+ * far are reported at once. Files are de-duplicated (a ref can appear twice).
+ */
+function expectDownloads(store: PackStore, refs: FileRef[], pr: ReturnType<typeof progressTracker>) {
+    const pending = [...new Map(refs.filter((r) => !store.has(r)).map((r) => [r.sha256, r])).values()];
+    pr.expect(pending.reduce((s, r) => s + r.size, 0));
+    for (const r of pending) store.watch(r, pr.bytes);
+}
+
 /** Download the pack of `board` and compile the tools, without compiling anything. */
 export async function prewarm(board: string, opts: CompileOptions): Promise<void> {
     const c = compilerFor(opts);
@@ -186,14 +197,14 @@ export async function prewarm(board: string, opts: CompileOptions): Promise<void
     if (m.pch && opts.usePch !== false) refs.push(m.pch.gch);
     if (m.link.lazy) refs.push(m.link.lazy.index, m.link.lazy.base);
     if (m.output.kind === "esp-image") refs.push(...m.output.images);
-    pr.expect(refs.filter((r) => !c.store.has(r)).reduce((s, r) => s + r.size, 0));
+    expectDownloads(c.store, refs, pr);
     await Promise.all([
-        ...(["cc1plus", "as", "ld"] as ToolName[]).map((t) => c.tool(m, t, pr.bytes)),
-        c.headers(m, pr.bytes),
-        ...m.link.files.map((f) => c.store.get(f, pr.bytes)),
-        ...(m.pch && opts.usePch !== false ? [c.store.get(m.pch.gch, pr.bytes)] : []),
-        ...(m.link.lazy ? [c.lazy(m, pr.bytes)] : []),
-        ...(m.output.kind === "esp-image" ? m.output.images.map((i) => c.store.get(i, pr.bytes)) : []),
+        ...(["cc1plus", "as", "ld"] as ToolName[]).map((t) => c.tool(m, t)),
+        c.headers(m),
+        ...m.link.files.map((f) => c.store.get(f)),
+        ...(m.pch && opts.usePch !== false ? [c.store.get(m.pch.gch)] : []),
+        ...(m.link.lazy ? [c.lazy(m)] : []),
+        ...(m.output.kind === "esp-image" ? m.output.images.map((i) => c.store.get(i)) : []),
     ]);
     pr.phase("done", 1, 1);
 }
@@ -278,17 +289,17 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
     if (usePch) refs.push(m.pch!.gch);
     if (m.link.lazy) refs.push(m.link.lazy.index, m.link.lazy.base);
     if (m.output.kind === "esp-image") refs.push(...m.output.images);
-    pr.expect(refs.filter((r) => !c.store.has(r)).reduce((s, r) => s + r.size, 0));
+    expectDownloads(c.store, refs, pr);
     let toolsP: Record<string, Promise<LoadedTool>>;
     let headers: Map<string, Uint8Array>;
     let gch: Uint8Array | undefined;
-    const linkFilesP = Promise.all(m.link.files.map(async (f) => [f.path, await c.store.get(f, pr.bytes)] as const));
-    const libsP = Promise.all(libArchives.map(async (l) => [`${m.fs.cwd}/${l.archive.path}`, await c.store.get(l.archive, pr.bytes)] as const));
-    const lazyP = m.link.lazy ? c.lazy(m, pr.bytes) : undefined;
-    const imagesP = m.output.kind === "esp-image" ? Promise.all(m.output.images.map(async (i) => ({ name: i.name, address: i.address, data: await c.store.get(i, pr.bytes) }))) : undefined;
+    const linkFilesP = Promise.all(m.link.files.map(async (f) => [f.path, await c.store.get(f)] as const));
+    const libsP = Promise.all(libArchives.map(async (l) => [`${m.fs.cwd}/${l.archive.path}`, await c.store.get(l.archive)] as const));
+    const lazyP = m.link.lazy ? c.lazy(m) : undefined;
+    const imagesP = m.output.kind === "esp-image" ? Promise.all(m.output.images.map(async (i) => ({ name: i.name, address: i.address, data: await c.store.get(i) }))) : undefined;
     try {
-        toolsP = Object.fromEntries(needTools.map((t) => [t, c.tool(m, t, pr.bytes)]));
-        [headers, gch] = await Promise.all([c.headers(m, pr.bytes), usePch ? c.store.get(m.pch!.gch, pr.bytes) : undefined]);
+        toolsP = Object.fromEntries(needTools.map((t) => [t, c.tool(m, t)]));
+        [headers, gch] = await Promise.all([c.headers(m), usePch ? c.store.get(m.pch!.gch) : undefined]);
         await Promise.all(Object.values(toolsP));
     } catch (e) {
         return fail([err(`download failed: ${(e as Error).message}`)]);
