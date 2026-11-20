@@ -154,7 +154,11 @@ export function resetCompilers() {
     compilers.clear();
 }
 
-/** Progress over a known total of bytes. */
+/**
+ * Progress over a known total of bytes. Bytes count only in the download phase: compile and
+ * link count steps, so a file that is still arriving once compiling started (a library archive,
+ * a lazily linked archive member) must not push their `loaded` past `total`.
+ */
 function progressTracker(onProgress: CompileOptions["onProgress"]) {
     let loaded = 0;
     let total = 0;
@@ -162,10 +166,12 @@ function progressTracker(onProgress: CompileOptions["onProgress"]) {
     const emit = () => onProgress?.({ phase, loaded, total });
     return {
         expect(n: number) {
+            if (phase !== "download") return;
             total += n;
             emit();
         },
         bytes: (n: number) => {
+            if (phase !== "download") return;
             loaded += n;
             emit();
         },
