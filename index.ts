@@ -3,6 +3,7 @@ export * from "./src/ino";
 export * from "./src/elf";
 export * from "./src/hex";
 export * from "./src/esp-image";
+export * from "./src/esp8266-image";
 export * from "./src/size";
 export * from "./src/ar";
 export { compileFirmware, prewarm, resetCompilers, inlineExecutor, UnknownBoardError, type CompileOptions, type CompileResult, type ToolExecutor } from "./src/compile";

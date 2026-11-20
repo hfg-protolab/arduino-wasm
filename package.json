@@ -13,6 +13,7 @@
         "./elf": "./src/elf.ts",
         "./hex": "./src/hex.ts",
         "./esp-image": "./src/esp-image.ts",
+        "./esp8266-image": "./src/esp8266-image.ts",
         "./size": "./src/size.ts",
         "./ar": "./src/ar.ts",
         "./compile": "./src/compile.ts",

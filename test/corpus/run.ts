@@ -28,10 +28,11 @@ import { loadConfig, REPO } from "../../pack/common.ts";
 import { compileFirmware, type CompileResult } from "../../src/compile";
 import { ElfFile } from "../../src/elf";
 import { elfToEspImage } from "../../src/esp-image";
+import { elfToEsp8266Image } from "../../src/esp8266-image";
 import type { BoardManifest } from "../../src/manifest";
 import type { Diagnostic } from "../../src/types";
 import { diskFetch, PACK_BASE } from "../node-fetch";
-import { compareWithNative, diffCount, nativeLink } from "../native-link";
+import { compareWithNative, diffCount, linkObjects, nativeLink } from "../native-link";
 import { type CorpusSketch, loadCorpus, matchSketch } from "./corpus";
 import { type NativeRef, RefBuilder } from "./reference";
 
@@ -147,7 +148,7 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
     // 1. native ld over the same stripped pack files
     const elfPath = `${m.fs.cwd}/${m.fs.buildDir}/firmware.elf`;
     const elf = r.intermediates!.get(elfPath)!;
-    const objs = [...r.intermediates!.keys()].filter((p) => p.endsWith(".o")).map((p) => p.slice(m.fs.cwd.length + 1)).sort();
+    const objs = linkObjects(m, r.intermediates!, r.stats!.libraries);
     // the wasm link's library order (LDF post-order)
     const libs = r.stats!.libraries.map((n) => m.libraries.find((l) => l.name === n)!).filter((l) => l.archive).map((l) => l.archive!.path);
     let native;
@@ -159,6 +160,11 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
         problems.push(`native link: ${(e as Error).message.slice(0, 1500)}`);
     }
 
+    if (m.output.kind === "esp8266-image" && native) {
+        const app = r.files.find((f) => f.name === "firmware.bin")!.data;
+        const eboot = new Uint8Array(readFileSync(join(PACK, m.output.eboot.file)));
+        if (diffCount(app, elfToEsp8266Image(native.elf, eboot, m.output.image))) problems.push("app image differs from the native link's image");
+    }
     if (m.output.kind === "esp-image" && native) {
         const app = r.files.find((f) => f.name === "firmware.bin")!.data;
         const nativeApp = await elfToEspImage(native.elf, m.output.image);
@@ -170,7 +176,7 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
     // 2. + 4. pio: images and size report
     let vs = comparePio(r, m, elf, ref);
     let fileMap = false;
-    if (vs.problems.length && vs.embedsProjectPath && m.arch === "esp32") {
+    if (vs.problems.length && vs.embedsProjectPath && m.arch !== "avr") {
         // the sketch expands __FILE__ (log_e, assert): compare with a reference whose __FILE__
         // names /work/project like the pack's virtual project dir
         const mapped = await refs.build(s.id, s.files, flag("force-ref"), "file-map");
@@ -204,6 +210,12 @@ function comparePio(r: CompileResult, m: BoardManifest, elf: Uint8Array, ref: Na
         const pioHex = readFileSync(join(ref.dir, "firmware.hex"), "utf8");
         pioImage = new TextEncoder().encode(pioHex);
         if (hex !== pioHex) problems.push("firmware.hex differs from pio");
+    } else if (m.output.kind === "esp8266-image") {
+        // elf2bin: eboot + the loaded sections + CRC; nothing hashes the debug info, so no masks
+        const app = r.files.find((f) => f.name === "firmware.bin")!.data;
+        pioImage = new Uint8Array(readFileSync(join(ref.dir, "firmware.bin")));
+        const d = diffCount(app, pioImage);
+        if (d) problems.push(`firmware.bin: ${d} bytes differ from pio`);
     } else {
         const app = r.files.find((f) => f.name === "firmware.bin")!.data;
         pioImage = new Uint8Array(readFileSync(join(ref.dir, "firmware.bin")));

@@ -1,0 +1,127 @@
+arduino-wasm: emulate the section ids GCC's LTO plugin consumes in ld (binutils 2.26).
+
+The native avr-gcc always links with -plugin liblto_plugin.so. In a non-LTO build the plugin
+claims nothing, but ld/plugin.c creates a dummy IR bfd with one section for every input it is
+offered, and each such section takes a section id. On avr6 (Mega 2560) the linker stubs are
+named after section ids and the .trampolines come out in hash order of those names: a
+plugin-less ld (this wasm build, --disable-plugins) lays them out differently, so the .hex
+differs from the native build. Take one id at the same points instead (details at
+bfd_wasm_consume_plugin_section_id in bfd/format.c).
+
+--- a/bfd/elflink.c
++++ b/bfd/elflink.c
+@@ -5195,6 +5195,15 @@
+ 	  if (! bfd_check_format (element, bfd_object))
+ 	    goto error_return;
+ 
++#if !BFD_SUPPORTS_PLUGINS
++	  {
++	    /* arduino-wasm: see bfd_wasm_consume_plugin_section_id (format.c);
++	       ld's add_archive_element offers the member to the plugin here.  */
++	    extern void bfd_wasm_consume_plugin_section_id (bfd *);
++	    bfd_wasm_consume_plugin_section_id (element);
++	  }
++#endif
++
+ 	  undefs_tail = info->hash->undefs_tail;
+ 
+ 	  if (!(*info->callbacks
+--- a/bfd/format.c
++++ b/bfd/format.c
+@@ -179,6 +179,43 @@
+   preserve->marker = NULL;
+ }
+ 
++#if !BFD_SUPPORTS_PLUGINS
++/* arduino-wasm: the native avr-gcc always runs ld with GCC's LTO plugin (collect2 passes
++   -plugin liblto_plugin.so even without -flto).  The plugin claims nothing in a non-LTO build,
++   but ld/plugin.c's plugin_object_p creates a dummy IR bfd with one ".text" section for every
++   input it is offered, and that takes one section id.  Section ids name the avr6 linker stubs
++   ("%08x+%08x"), whose hash-table order is the order of the .trampolines: without the same
++   ids a Mega 2560 .hex differs from the native one.  This build has no plugin support, so
++   take the id at the same points, once per bfd, while ld still offers files to the plugin
++   (BFD_WASM_PLUGIN_CLAIMING; ld clears it where it would call all_symbols_read):
++   - a command-line object or an archive member, after its format check (ld/ldfile.c,
++     elflink.c where ld's add_archive_element is called),
++   - any bfd_check_format (bfd_object) that the default target rejects: the next target in a
++     plugin-enabled bfd is plugin_vec (this is what costs every archive file one id).
++   Checked with ld --debug-stubs against the native ld with and without -plugin (objects,
++   archives with loaded and skipped members, an empty archive, --start-group).  */
++int bfd_wasm_plugin_claiming = 1;
++
++void
++bfd_wasm_consume_plugin_section_id (bfd *ibfd)
++{
++  static bfd *dummy;
++  if (!bfd_wasm_plugin_claiming || ibfd->plugin_format != bfd_plugin_uknown)
++    return;
++  ibfd->plugin_format = bfd_plugin_no;
++  if (dummy == NULL)
++    {
++      dummy = bfd_create ("wasm-lto-plugin-ids", ibfd);
++      if (dummy == NULL || !bfd_make_writable (dummy))
++	abort ();
++    }
++  if (bfd_make_section_anyway_with_flags (dummy, ".text",
++					  SEC_CODE | SEC_HAS_CONTENTS | SEC_READONLY
++					  | SEC_ALLOC | SEC_LOAD | SEC_KEEP | SEC_EXCLUDE) == NULL)
++    abort ();
++}
++#endif
++
+ /*
+ FUNCTION
+ 	bfd_check_format_matches
+@@ -289,6 +326,12 @@
+ 	 have sections attached, which will confuse the next
+ 	 _bfd_check_format call.  */
+       bfd_reinit (abfd);
++
++#if !BFD_SUPPORTS_PLUGINS
++      /* arduino-wasm: plugin_vec comes right after the default target.  */
++      if (target == bfd_target_vector + 1 && format == bfd_object)
++	bfd_wasm_consume_plugin_section_id (abfd);
++#endif
+ 
+       /* Change BFD's target temporarily.  */
+       abfd->xvec = *target;
+--- a/ld/ldfile.c
++++ b/ld/ldfile.c
+@@ -313,6 +313,10 @@
+       && !no_more_claiming
+       && bfd_check_format (entry->the_bfd, bfd_object))
+     plugin_maybe_claim (entry);
++#else
++  /* arduino-wasm: see bfd_wasm_consume_plugin_section_id (bfd/format.c).  */
++  if (bfd_check_format (entry->the_bfd, bfd_object))
++    bfd_wasm_consume_plugin_section_id (entry->the_bfd);
+ #endif /* ENABLE_PLUGINS */
+ 
+   /* It opened OK, the format checked out, and the plugins have had
+--- a/ld/ldlang.c
++++ b/ld/ldlang.c
+@@ -6725,6 +6725,11 @@
+   current_target = default_target;
+   open_input_bfds (statement_list.head, OPEN_BFD_NORMAL);
+ 
++#ifndef ENABLE_PLUGINS
++  /* arduino-wasm: plugin_call_all_symbols_read sets no_more_claiming here.  */
++  bfd_wasm_plugin_claiming = 0;
++#endif
++
+ #ifdef ENABLE_PLUGINS
+   if (link_info.lto_plugin_active)
+     {
+--- a/ld/ldmain.h
++++ b/ld/ldmain.h
+@@ -59,4 +59,10 @@
+ extern void add_ignoresym (struct bfd_link_info *, const char *);
+ extern void add_keepsyms_file (const char *);
+ 
++#ifndef ENABLE_PLUGINS
++/* arduino-wasm: emulated LTO-plugin section ids (bfd/format.c).  */
++extern int bfd_wasm_plugin_claiming;
++extern void bfd_wasm_consume_plugin_section_id (bfd *);
++#endif
++
+ #endif

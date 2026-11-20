@@ -31,6 +31,9 @@ ENV PLATFORMIO_CORE_DIR=/opt/pio \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# git: pioarduino (platform-espressif32 55.x) refuses to run without it.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 RUN pip install "platformio==${PLATFORMIO_VERSION}" \
  && pio --version \
  && pio settings set enable_telemetry No
@@ -41,7 +44,7 @@ RUN pio run -d /opt/pio-template \
 
 COPY libraries.txt /opt/pio-libs.txt
 RUN set -eu; \
-    mkdir -p /opt/pio-libs/all /opt/pio-libs/avr /opt/pio-libs/esp32; \
+    mkdir -p /opt/pio-libs/all /opt/pio-libs/avr /opt/pio-libs/esp32 /opt/pio-libs/esp8266; \
     grep -v '^#' /opt/pio-libs.txt | grep -v '^$' | while read -r dir spec; do \
         pio pkg install --global --storage-dir "/opt/pio-libs/${dir}" --library "${spec}"; \
     done; \

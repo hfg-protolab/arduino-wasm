@@ -78,11 +78,25 @@ export function refDirOf(sketchId: string, board: string, files: Array<{ path: s
     return join(REF_ROOT, cfg.packVersion, board, `${sketchId.replace(/[^A-Za-z0-9_.-]+/g, "_")}.${refKey(board, files, variant)}`);
 }
 
+/**
+ * pioarduino checks its penv's esptool with a 5 s timeout and force-reinstalls it when the check
+ * is slow (a loaded machine); a parallel build then finds no esptool module. Not the sketch's fault:
+ * retried. Never build ESP8266 (espressif8266 wants tool-esptoolpy ~1.30000 and reinstalls the
+ * shared package dir) in the same container as ESP32 boards: run them as a separate corpus run.
+ * Run the corpus with bytecode caching on and the penv precompiled, so the check is fast:
+ *   -e PYTHONDONTWRITEBYTECODE= … sh -c '/opt/pio/penv/bin/python -m compileall -q /opt/pio/penv/lib /opt/pio/packages/tool-esptoolpy; bun test/corpus/run.ts …'
+ */
+const PENV_RACE = /No module named 'esptool|'esptool' is not a package|Failed to install esptool from|RecursionError: maximum recursion depth exceeded|penv\/bin\/esptool: not found|Could not install package 'platformio\/tool-esptoolpy|VCS: Unknown repository type \/opt\/pio\/packages\/tool-esptoolpy/;
+const penvRace = (log: string) =>
+    (PENV_RACE.test(log) || /MissingPackageManifestError|Installing \S*tool-esptoolpy/.test(log)) && !/: (fatal )?error: |undefined reference to/.test(log);
+
 export function cachedRef(sketchId: string, board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain"): NativeRef | null {
     const dir = refDirOf(sketchId, board, files, variant);
     const p = join(dir, "result.json");
     if (!existsSync(p)) return null;
-    return { ...(JSON.parse(readFileSync(p, "utf8")) as NativeRef), dir, cached: true };
+    const r = JSON.parse(readFileSync(p, "utf8")) as NativeRef;
+    if (!r.ok && penvRace(r.logTail ?? "")) return null;
+    return { ...r, dir, cached: true };
 }
 
 /** A few reused PlatformIO projects per board; `build` waits for a free one. */
@@ -130,7 +144,11 @@ export class RefBuilder {
             writeProject(proj, this.board, files, variant === "file-map" ? [`build_src_flags = -fmacro-prefix-map=${proj}=${loadConfig().virtualRoots.project}`] : []);
             const out = join(proj, ".pio/build", this.board);
             for (const f of OUT_FILES) rmSync(join(out, f), { force: true });
-            const r = await pioRun(proj, this.board);
+            let r = await pioRun(proj, this.board);
+            for (let i = 0; i < 6 && !r.ok && penvRace(r.log); i++) {
+                await new Promise((res) => setTimeout(res, 5000 + Math.random() * 15000));
+                r = await pioRun(proj, this.board);
+            }
             const dir = refDirOf(sketchId, this.board, files, variant);
             rmSync(dir, { recursive: true, force: true });
             mkdirSync(dir, { recursive: true });

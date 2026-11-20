@@ -15,6 +15,7 @@ import { parseDiagnostics, type DiagnosticContext } from "./diagnostics";
 import { expandArgs, loadTool, runTool, tagFileset, type LoadedTool, type RunOptions, type RunResult } from "./driver";
 import { ElfFile } from "./elf";
 import { elfToEspImage } from "./esp-image";
+import { elfToEsp8266Image } from "./esp8266-image";
 import { elfToIntelHex } from "./hex";
 import { inoToCpp, PreprocessUnsupportedError } from "./ino";
 import { selectLibraries } from "./ldf";
@@ -197,6 +198,7 @@ export async function prewarm(board: string, opts: CompileOptions): Promise<void
     if (m.pch && opts.usePch !== false) refs.push(m.pch.gch);
     if (m.link.lazy) refs.push(m.link.lazy.index, m.link.lazy.base);
     if (m.output.kind === "esp-image") refs.push(...m.output.images);
+    if (m.output.kind === "esp8266-image") refs.push(m.output.eboot);
     expectDownloads(c.store, refs, pr);
     await Promise.all([
         ...(["cc1plus", "as", "ld"] as ToolName[]).map((t) => c.tool(m, t)),
@@ -205,6 +207,7 @@ export async function prewarm(board: string, opts: CompileOptions): Promise<void
         ...(m.pch && opts.usePch !== false ? [c.store.get(m.pch.gch)] : []),
         ...(m.link.lazy ? [c.lazy(m)] : []),
         ...(m.output.kind === "esp-image" ? m.output.images.map((i) => c.store.get(i)) : []),
+        ...(m.output.kind === "esp8266-image" ? [c.store.get(m.output.eboot)] : []),
     ]);
     pr.phase("done", 1, 1);
 }
@@ -285,16 +288,20 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
     const pr = progressTracker(opts.onProgress);
     const usePch = !!m.pch && opts.usePch !== false && tus.some((t) => t.pch);
     const needTools: ToolName[] = ["as", "ld", ...(tus.some((t) => t.lang === "cpp") ? (["cc1plus"] as const) : []), ...(tus.some((t) => t.lang === "c") ? (["cc1"] as const) : [])];
-    const refs: FileRef[] = [...needTools.flatMap((t) => [m.tools[t].js, m.tools[t].wasm]), ...m.headers, ...m.link.files, ...libArchives.map((l) => l.archive)];
+    const libObjects = ldf.libraries.flatMap((l) => l.objects ?? []);
+    const refs: FileRef[] = [...needTools.flatMap((t) => [m.tools[t].js, m.tools[t].wasm]), ...m.headers, ...m.link.files, ...libArchives.map((l) => l.archive), ...libObjects];
     if (usePch) refs.push(m.pch!.gch);
     if (m.link.lazy) refs.push(m.link.lazy.index, m.link.lazy.base);
     if (m.output.kind === "esp-image") refs.push(...m.output.images);
+    if (m.output.kind === "esp8266-image") refs.push(m.output.eboot);
     expectDownloads(c.store, refs, pr);
     let toolsP: Record<string, Promise<LoadedTool>>;
     let headers: Map<string, Uint8Array>;
     let gch: Uint8Array | undefined;
     const linkFilesP = Promise.all(m.link.files.map(async (f) => [f.path, await c.store.get(f)] as const));
     const libsP = Promise.all(libArchives.map(async (l) => [`${m.fs.cwd}/${l.archive.path}`, await c.store.get(l.archive)] as const));
+    const libObjsP = Promise.all(libObjects.map(async (o) => [o.path, await c.store.get(o)] as const));
+    const ebootP = m.output.kind === "esp8266-image" ? c.store.get(m.output.eboot) : undefined;
     const lazyP = m.link.lazy ? c.lazy(m) : undefined;
     const imagesP = m.output.kind === "esp-image" ? Promise.all(m.output.images.map(async (i) => ({ name: i.name, address: i.address, data: await c.store.get(i) }))) : undefined;
     try {
@@ -329,7 +336,7 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
             const cc: ToolName = t.lang === "cpp" ? "cc1plus" : "cc1";
             const tmpl = t.lang === "cpp" ? m.compile.cpp.cc1plus : m.compile.c.cc1;
             const asTmpl = t.lang === "cpp" ? m.compile.cpp.as : m.compile.c.as;
-            const vars = { SRC: `src/${t.path}`, DUMPBASE: t.path.split("/").pop()!, OBJ: objPath(t), ASM: `/tmp/tu${i}.s` };
+            const vars = { SRC: `src/${t.path}`, DUMPBASE: t.path.split("/").pop()!, OBJ: objPath(t), OBJDIR: dirOf(objPath(t)), ASM: `/tmp/tu${i}.s` };
             let argv = expandArgs(tmpl, vars, { LIBINC: ldf.includeArgs });
             if (t.pch && usePch) argv = [...m.pch!.args, ...argv];
             const asArgv = expandArgs(asTmpl, vars);
@@ -384,9 +391,17 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
     // ---- link
     const tLd = now();
     pr.phase("link", 0, 1);
-    const objList = tus.map(objPath);
+    let libObjs: ReadonlyArray<readonly [string, Uint8Array]>;
+    try {
+        libObjs = await libObjsP;
+    } catch (e) {
+        return fail([err(`download failed: ${(e as Error).message}`)]);
+    }
+    // pio's link line: library objects (lib_archive = no) first, then the sketch's
+    const objList = [...libObjs.map(([p]) => p), ...tus.map(objPath)];
     const linkFiles = new Map<string, Uint8Array>(await linkFilesP);
     for (const [p, d] of await libsP) linkFiles.set(p, d);
+    for (const [p, d] of libObjs) linkFiles.set(`${m.fs.cwd}/${p}`, d);
     for (const [p, d] of objects) linkFiles.set(`${m.fs.cwd}/${p}`, d);
     const intermediates = opts.keepIntermediates ? new Map<string, Uint8Array>() : undefined;
     if (lazyP) {
@@ -397,7 +412,8 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
             return fail([err(`download failed: ${(e as Error).message}`)]);
         }
         const tRes = now();
-        const { archives, linked, fetched } = await lazyArchives(c, m, lz, objList.map((p) => objects.get(p)!), await libsP, pr.bytes);
+        const objBytes = new Map<string, Uint8Array>([...libObjs, ...objects]);
+        const { archives, linked, fetched } = await lazyArchives(c, m, lz, objList.map((p) => objBytes.get(p)!), await libsP, pr.bytes);
         for (const [p, d] of archives) {
             linkFiles.set(p, d);
             intermediates?.set(p, d);
@@ -417,6 +433,7 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
         return fail(d.errors.length ? d.errors : [err(`linking failed (ld exit ${r.code})`)], d.warnings);
     }
     if (intermediates) {
+        for (const [p, d] of libObjs) intermediates.set(`${m.fs.cwd}/${p}`, d);
         for (const [p, d] of objects) intermediates.set(`${m.fs.cwd}/${p}`, d);
         intermediates.set(`${m.fs.cwd}/${elfPath}`, elf);
     }
@@ -427,6 +444,8 @@ export async function compileFirmware(request: CompileRequest, opts: CompileOpti
     const e = new ElfFile(elf);
     if (m.output.kind === "hex") {
         out.push({ name: "firmware.hex", data: enc.encode(elfToIntelHex(e, { remove: m.output.remove })) });
+    } else if (m.output.kind === "esp8266-image") {
+        out.push({ name: "firmware.bin", address: m.output.appAddress, data: elfToEsp8266Image(elf, (await ebootP)!, m.output.image) });
     } else {
         out.push({ name: "firmware.bin", address: m.output.appAddress, data: await elfToEspImage(elf, m.output.image) });
         for (const img of (await imagesP)!) out.push(img);

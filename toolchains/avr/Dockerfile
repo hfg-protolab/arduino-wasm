@@ -52,6 +52,13 @@ RUN wget -q https://ftp.gnu.org/gnu/gcc/gcc-7.3.0/gcc-7.3.0.tar.xz \
 COPY binutils-2.26-wasm-fnptr.patch /src/
 RUN cd /src/binutils && patch -p1 < /src/binutils-2.26-wasm-fnptr.patch
 
+# ld: the native avr-gcc links with GCC's LTO plugin, which consumes one section id per input
+# (dummy IR bfd); the Mega's .trampolines are ordered by those ids. The wasm ld has no plugin
+# support, so it consumes the ids itself (patch header). Only the wasm ld changes: the native
+# binutils below are built with plugin support, where the patch is inactive.
+COPY binutils-2.26-lto-plugin-ids.patch /src/
+RUN cd /src/binutils && patch -p1 < /src/binutils-2.26-lto-plugin-ids.patch
+
 # --- native avr binutils: only so GCC's configure can probe the assembler/linker features.
 # Without it GCC assumes an old gas (no COMDAT groups → .gnu.linkonce sections instead of
 # .group, other objects than the native toolchain). Not shipped.

@@ -1,37 +1,43 @@
 /**
- * TypeScript port of esptool v4.11.0 `elf2image` for ESP32, ESP32-S3 and ESP32-C3
- * (esptool/cmds.py elf2image, esptool/bin_image.py ELFFile / ESP32FirmwareImage).
- * Produces byte-identical output to:
+ * TypeScript port of esptool v5.3.0 `elf2image` for ESP32, ESP32-S3, ESP32-C3 and ESP32-C6
+ * (esptool/cmds.py elf2image + _parse_app_info, esptool/bin_image.py ELFFile / ESP32FirmwareImage,
+ * esptool/targets/esp32*.py). Produces byte-identical output to:
  *
- *   esptool.py --chip <chip> elf2image --flash_mode <m> --flash_freq <f> --flash_size <s>
- *              [--elf-sha256-offset <n>] -o out.bin in.elf
+ *   esptool --chip <chip> elf2image --flash-mode <m> --flash-freq <f> --flash-size <s>
+ *           [--elf-sha256-offset <n>] -o out.bin in.elf
  *
- * with every other option at its argparse default:
+ * with every other option at its default:
  *   --version 1 (ignored for non-ESP8266), --min-rev 0, --min-rev-full 0, --max-rev-full 65535,
- *   no --secure-pad / --secure-pad-v2, append digest on, --use_segments off (ELF *sections* are used),
+ *   no --secure-pad / --secure-pad-v2, append digest on, --use-segments off (ELF *sections* are used),
  *   no --flash-mmu-page-size, no --pad-to-size, no --ram-only-header.
+ *
+ * What esptool 5 does differently from 4.x for these inputs is only the ESP32-C6 support:
+ * a per-chip flash frequency table (C6 encodes 80m as 0x0) and the MMU page size, which on
+ * chips with a configurable MMU page size (C6: 8/16/32/64 KB) comes from the app descriptor's
+ * `mmu_page_size` field (ESP-IDF >= 5.4) or, if that is 0, is guessed from the app descriptor's
+ * load address. Header, segment ordering, padding and merge rules are unchanged.
  *
  * Code paths dropped because they are unreachable with these chips/options:
  *   - ESP8266 image formats (v1/v2/v3).
- *   - MMU page size handling: --flash-mmu-page-size is never passed, and the app-desc based
- *     auto-detection only runs for chips with a configurable MMU page size (MMU_PAGE_SIZE_CONF,
- *     i.e. ESP32-C2/C6 family); for ESP32/S3/C3 IROM_ALIGN stays 64 KB.
- *   - --use_segments (ELF program headers): the image is always built from sections.
- *   - --ram-only-header (incl. its segment sorting and the reversed flash-segment layout).
+ *   - --flash-mmu-page-size (never passed; only the app-desc based detection is ported).
+ *   - --use-segments (ELF program headers): the image is always built from sections.
+ *   - --ram-only-header (incl. its segment sorting, the alignment padding in
+ *     merge_adjacent_segments and the reversed flash-segment layout).
  *   - --secure-pad / --secure-pad-v2 and --pad-to-size.
  *   - --dont-append-digest (the SHA-256 of the image is always appended).
+ *   - Warnings (unknown section types, misaligned app descriptor) are not reported.
  *
  * Browser-safe: Uint8Array/DataView only, SHA-256 via crypto.subtle.
  */
 
 import { ElfFile } from "./elf";
 
-export type EspChip = "esp32" | "esp32s3" | "esp32c3";
+export type EspChip = "esp32" | "esp32s3" | "esp32c3" | "esp32c6";
 
 export interface ElfToImageOptions {
     chip: EspChip;
     flashMode: "qio" | "qout" | "dio" | "dout";
-    /** "80m", "40m", "26m", "20m" (the encodings these chips support). */
+    /** "80m", "40m", "26m", "20m" (ESP32/S3/C3); "80m", "40m", "20m" (C6). */
     flashFreq: string;
     /** "1MB" … "128MB". */
     flashSize: string;
@@ -39,15 +45,29 @@ export interface ElfToImageOptions {
     elfSha256Offset?: number;
 }
 
-/** Board presets (PlatformIO espressif32@7.1.3 app image flags), keyed by our board ids. */
-export const ESP_IMAGE_PRESETS: Record<"esp32dev" | "esp32-s3" | "esp32-c3", ElfToImageOptions> = {
+/**
+ * App image flags of pioarduino (platform-espressif32 55.03.39, Arduino-ESP32 3.3.9), keyed by
+ * our board ids. builder/main.py passes `--flash-mode _get_board_flash_mode` (board
+ * build.flash_mode, qio/qout -> dio, opi memory types -> dout), `--flash-freq _get_board_f_image`
+ * (build.f_image, else build.f_flash), `--flash-size upload.flash_size` and
+ * `--elf-sha256-offset 0xb0`; the values come from boards/<pio board>.json:
+ *   esp32dev            flash_mode dio, f_flash 40 MHz, 4MB
+ *   esp32-s3-devkitc-1  flash_mode qio, f_flash 80 MHz, 8MB
+ *   esp32-c3-devkitm-1  flash_mode qio, f_flash 80 MHz, 4MB
+ *   esp32-c6-devkitc-1  flash_mode qio, f_flash 80 MHz, 8MB
+ *   arduino_nano_esp32  flash_mode qio, f_flash 80 MHz, 16MB (memory_type qio_opi: not an opi flash)
+ */
+export const ESP_IMAGE_PRESETS: Record<"esp32dev" | "esp32-s3" | "esp32-c3" | "esp32-c6" | "nano-esp32", ElfToImageOptions> = {
     esp32dev: { chip: "esp32", flashMode: "dio", flashFreq: "40m", flashSize: "4MB", elfSha256Offset: 0xb0 },
     "esp32-s3": { chip: "esp32s3", flashMode: "dio", flashFreq: "80m", flashSize: "8MB", elfSha256Offset: 0xb0 },
     "esp32-c3": { chip: "esp32c3", flashMode: "dio", flashFreq: "80m", flashSize: "4MB", elfSha256Offset: 0xb0 },
+    "esp32-c6": { chip: "esp32c6", flashMode: "dio", flashFreq: "80m", flashSize: "8MB", elfSha256Offset: 0xb0 },
+    "nano-esp32": { chip: "esp32s3", flashMode: "dio", flashFreq: "80m", flashSize: "16MB", elfSha256Offset: 0xb0 },
 };
 
 // ---------------------------------------------------------------------------------------------
-// Chip definitions (esptool/targets/esp32.py, esp32s3.py, esp32c3.py)
+// Chip definitions (esptool/targets/esp32.py, esp32s3.py, esp32c3.py, esp32c6.py;
+// MMU_PAGE_SIZE_CONF from bin_image.py ESP32C6FirmwareImage)
 
 type MemoryRange = readonly [start: number, end: number, type: string];
 
@@ -59,10 +79,13 @@ interface ChipDef {
     iromMapEnd: number;
     dromMapStart: number;
     dromMapEnd: number;
+    flashFrequency: Record<string, number>;
+    /** Configurable MMU page sizes (empty: fixed 64 KB). */
+    mmuPageSizeConf: readonly number[];
     memoryMap: readonly MemoryRange[];
 }
 
-// ESP32-S3 and ESP32-C3 inherit both tables from ESP32ROM.
+// All four chips inherit FLASH_SIZES from ESP32ROM.
 const FLASH_SIZES: Record<string, number> = {
     "1MB": 0x00,
     "2MB": 0x10,
@@ -74,7 +97,8 @@ const FLASH_SIZES: Record<string, number> = {
     "128MB": 0x70,
 };
 
-const FLASH_FREQUENCY: Record<string, number> = {
+// ESP32ROM.FLASH_FREQUENCY (inherited by S3 and C3).
+const ESP32_FLASH_FREQUENCY: Record<string, number> = {
     "80m": 0xf,
     "40m": 0x0,
     "26m": 0x1,
@@ -82,6 +106,20 @@ const FLASH_FREQUENCY: Record<string, number> = {
 };
 
 const FLASH_MODES: Record<ElfToImageOptions["flashMode"], number> = { qio: 0, qout: 1, dio: 2, dout: 3 };
+
+const ESP32C3_MEMORY_MAP: readonly MemoryRange[] = [
+    [0x00000000, 0x00010000, "PADDING"],
+    [0x3c000000, 0x3c800000, "DROM"],
+    [0x3fc80000, 0x3fce0000, "DRAM"],
+    [0x3fc88000, 0x3fd00000, "BYTE_ACCESSIBLE"],
+    [0x3ff00000, 0x3ff20000, "DROM_MASK"],
+    [0x40000000, 0x40060000, "IROM_MASK"],
+    [0x42000000, 0x42800000, "IROM"],
+    [0x4037c000, 0x403e0000, "IRAM"],
+    [0x50000000, 0x50002000, "RTC_IRAM"],
+    [0x50000000, 0x50002000, "RTC_DRAM"],
+    [0x600fe000, 0x60100000, "MEM_INTERNAL2"],
+];
 
 const CHIPS: Record<EspChip, ChipDef> = {
     esp32: {
@@ -91,6 +129,8 @@ const CHIPS: Record<EspChip, ChipDef> = {
         iromMapEnd: 0x40400000,
         dromMapStart: 0x3f400000,
         dromMapEnd: 0x3f800000,
+        flashFrequency: ESP32_FLASH_FREQUENCY,
+        mmuPageSizeConf: [],
         memoryMap: [
             [0x00000000, 0x00010000, "PADDING"],
             [0x3f400000, 0x3f800000, "DROM"],
@@ -116,6 +156,8 @@ const CHIPS: Record<EspChip, ChipDef> = {
         iromMapEnd: 0x44000000,
         dromMapStart: 0x3c000000,
         dromMapEnd: 0x3e000000,
+        flashFrequency: ESP32_FLASH_FREQUENCY,
+        mmuPageSizeConf: [],
         memoryMap: [
             [0x00000000, 0x00010000, "PADDING"],
             [0x3c000000, 0x3d000000, "DROM"],
@@ -138,17 +180,35 @@ const CHIPS: Record<EspChip, ChipDef> = {
         iromMapEnd: 0x42800000,
         dromMapStart: 0x3c000000,
         dromMapEnd: 0x3c800000,
+        flashFrequency: ESP32_FLASH_FREQUENCY,
+        mmuPageSizeConf: [],
+        memoryMap: ESP32C3_MEMORY_MAP,
+    },
+    esp32c6: {
+        name: "ESP32-C6",
+        imageChipId: 13,
+        // IROM and DROM share one 8 MB window each on the C6's unified cache bus.
+        iromMapStart: 0x42000000,
+        iromMapEnd: 0x42800000,
+        dromMapStart: 0x42800000,
+        dromMapEnd: 0x43000000,
+        flashFrequency: {
+            "80m": 0x0, // workaround for wrong mspi HS div value in ROM
+            "40m": 0x0,
+            "20m": 0x2,
+        },
+        mmuPageSizeConf: [8192, 16384, 32768, 65536],
         memoryMap: [
             [0x00000000, 0x00010000, "PADDING"],
-            [0x3c000000, 0x3c800000, "DROM"],
-            [0x3fc80000, 0x3fce0000, "DRAM"],
-            [0x3fc88000, 0x3fd00000, "BYTE_ACCESSIBLE"],
-            [0x3ff00000, 0x3ff20000, "DROM_MASK"],
-            [0x40000000, 0x40060000, "IROM_MASK"],
-            [0x42000000, 0x42800000, "IROM"],
-            [0x4037c000, 0x403e0000, "IRAM"],
-            [0x50000000, 0x50002000, "RTC_IRAM"],
-            [0x50000000, 0x50002000, "RTC_DRAM"],
+            [0x42000000, 0x43000000, "DROM"],
+            [0x40800000, 0x40880000, "DRAM"],
+            [0x40800000, 0x40880000, "BYTE_ACCESSIBLE"],
+            [0x4004ac00, 0x40050000, "DROM_MASK"],
+            [0x40000000, 0x4004ac00, "IROM_MASK"],
+            [0x42000000, 0x43000000, "IROM"],
+            [0x40800000, 0x40880000, "IRAM"],
+            [0x50000000, 0x50004000, "RTC_IRAM"],
+            [0x50000000, 0x50004000, "RTC_DRAM"],
             [0x600fe000, 0x60100000, "MEM_INTERNAL2"],
         ],
     },
@@ -161,8 +221,8 @@ const ESP_IMAGE_MAGIC = 0xe9;
 const ESP_CHECKSUM_MAGIC = 0xef;
 const SEG_HEADER_LEN = 8;
 const SHA256_DIGEST_LEN = 32;
-/** ESP32FirmwareImage.IROM_ALIGN (64 KB MMU pages; not configurable on these chips). */
-const IROM_ALIGN = 0x10000;
+/** ESP32FirmwareImage.IROM_ALIGN: 64 KB MMU pages unless the chip's page size is configurable. */
+const DEFAULT_IROM_ALIGN = 0x10000;
 const WP_PIN_DISABLED = 0xee;
 const MIN_REV = 0;
 const MIN_REV_FULL = 0;
@@ -318,6 +378,45 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
     return new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(data)));
 }
 
+/** esp_app_desc_t magic (cmds.py _parse_app_info). */
+const APP_DESC_MAGIC = 0xabcd5432;
+/** sizeof(esp_app_desc_t) = struct "<II8s32s32s16s16s32s32sHHB3s72s". */
+const APP_DESC_LEN = 256;
+/** Offset of the uint8 mmu_page_size field (log2 of the page size, 0 = not set; ESP-IDF >= 5.4). */
+const APP_DESC_MMU_PAGE_SIZE_OFFSET = 180;
+
+/**
+ * cmds.py elf2image without --flash-mmu-page-size: the IROM_ALIGN used for the image. Only chips
+ * with a configurable MMU page size (C6) look at the first flash-mapped ".flash.appdesc" section;
+ * all others keep 64 KB.
+ */
+function mmuPageSize(chip: ChipDef, sections: Segment[], isFlashAddr: (addr: number) => boolean): number {
+    const appdesc = sections.find((s) => s.name!.includes(".flash.appdesc"));
+    if (!appdesc || !isFlashAddr(appdesc.addr) || chip.mmuPageSizeConf.length === 0) return DEFAULT_IROM_ALIGN;
+    const data = appdesc.data;
+    // Python: struct.unpack on data[:256] raises for a shorter section.
+    if (data.length < APP_DESC_LEN) throw new Error(`unpack requires a buffer of ${APP_DESC_LEN} bytes`);
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    if (view.getUint32(0, true) !== APP_DESC_MAGIC) return DEFAULT_IROM_ALIGN;
+    const log2 = data[APP_DESC_MMU_PAGE_SIZE_OFFSET]!;
+    if (log2 !== 0) {
+        // f"{2**n // 1024} KB" -> flash_size_bytes -> set_mmu_page_size
+        const size = Math.floor(2 ** log2 / 1024) * 1024;
+        if (!chip.mmuPageSizeConf.includes(size)) {
+            const valid = chip.mmuPageSizeConf.map((x) => `${x / 1024}KB`).join(", ");
+            throw new Error(`${size} bytes is not a valid ${chip.name} page size, select from ${valid}.`);
+        }
+        return size;
+    }
+    // No size in the descriptor: the app descriptor sits right after the image header (24 bytes)
+    // and its segment header (8 bytes) at the start of an MMU page; take the largest page size
+    // that fits. If none does, esptool only warns and keeps 64 KB.
+    for (const size of [...chip.mmuPageSizeConf].reverse()) {
+        if ((appdesc.addr - 24 - 8) % size === 0) return size;
+    }
+    return DEFAULT_IROM_ALIGN;
+}
+
 // ---------------------------------------------------------------------------------------------
 // elf2image
 
@@ -326,22 +425,24 @@ export async function elfToEspImage(elfBytes: Uint8Array, opts: ElfToImageOption
     if (!chip) throw new Error(`unsupported chip: ${String(opts.chip)}`);
     const flashMode = FLASH_MODES[opts.flashMode];
     if (flashMode === undefined) throw new Error(`unsupported flash mode: ${String(opts.flashMode)}`);
-    const sizeCode = FLASH_SIZES[opts.flashSize];
-    if (sizeCode === undefined) {
-        throw new Error(`Flash size '${opts.flashSize}' is not supported by this chip type. Supported sizes: ${Object.keys(FLASH_SIZES).join(", ")}`);
-    }
-    const freqCode = FLASH_FREQUENCY[opts.flashFreq];
-    if (freqCode === undefined) {
-        throw new Error(
-            `Flash frequency '${opts.flashFreq}' is not supported by this chip type. Supported frequencies: ${Object.keys(FLASH_FREQUENCY).join(", ")}`,
-        );
-    }
 
     const elf = new ElfFile(elfBytes);
     const isFlashAddr = (addr: number) =>
         (chip.iromMapStart <= addr && addr < chip.iromMapEnd) || (chip.dromMapStart <= addr && addr < chip.dromMapEnd);
 
     let segments = readSections(elf);
+    const iromAlign = mmuPageSize(chip, segments, isFlashAddr);
+
+    const sizeCode = FLASH_SIZES[opts.flashSize];
+    if (sizeCode === undefined) {
+        throw new Error(`Flash size '${opts.flashSize}' is not supported by this chip type. Supported sizes: ${Object.keys(FLASH_SIZES).join(", ")}`);
+    }
+    const freqCode = chip.flashFrequency[opts.flashFreq];
+    if (freqCode === undefined) {
+        throw new Error(
+            `Flash frequency '${opts.flashFreq}' is not supported by this chip type. Supported frequencies: ${Object.keys(chip.flashFrequency).join(", ")}`,
+        );
+    }
     const flashSizeFreq = sizeCode + freqCode;
 
     let elfSha256: Uint8Array | null = null;
@@ -403,9 +504,9 @@ export async function elfToEspImage(elfBytes: Uint8Array, opts: ElfToImageOption
     if (flashSegments.length > 0) {
         let lastAddr = flashSegments[0]!.addr;
         for (const seg of flashSegments.slice(1)) {
-            if (Math.floor(seg.addr / IROM_ALIGN) === Math.floor(lastAddr / IROM_ALIGN)) {
+            if (Math.floor(seg.addr / iromAlign) === Math.floor(lastAddr / iromAlign)) {
                 throw new Error(
-                    `Segment loaded at ${hex8(seg.addr)} lands in same ${IROM_ALIGN / 1024} KB flash mapping as segment loaded at ${hex8(lastAddr)}. ` +
+                    `Segment loaded at ${hex8(seg.addr)} lands in same ${iromAlign / 1024} KB flash mapping as segment loaded at ${hex8(lastAddr)}. ` +
                         "Can't generate binary. Suggest changing linker script or ELF to merge sections.",
                 );
             }
@@ -425,7 +526,7 @@ export async function elfToEspImage(elfBytes: Uint8Array, opts: ElfToImageOption
             patchOffset -= SEG_HEADER_LEN;
             if (data.subarray(patchOffset, patchOffset + SHA256_DIGEST_LEN).some((b) => b !== 0)) {
                 throw new Error(
-                    `Contents of segment at SHA256 digest offset 0x${elfSha256Offset.toString(16)} are not all zero. Refusing to overwrite.`,
+                    `Contents of segment at SHA256 digest offset 0x${elfSha256Offset.toString(16)} are not zero. Refusing to overwrite.`,
                 );
             }
             const patched = new Uint8Array(data);
@@ -455,20 +556,20 @@ export async function elfToEspImage(elfBytes: Uint8Array, opts: ElfToImageOption
             // Work around an ESP-IDF 2nd stage bootloader bug: it didn't map the last MMU page
             // if an IROM/DROM segment was < 0x24 bytes over the page boundary.
             const segmentEndPos = f.pos + seg.data.length + SEG_HEADER_LEN;
-            const remainder = segmentEndPos % IROM_ALIGN;
+            const remainder = segmentEndPos % iromAlign;
             if (remainder < 0x24) seg.data = concat(seg.data, new Uint8Array(0x24 - remainder));
         }
         saveSegment(seg, seg.name);
     };
 
-    // Padding needed so that, after the next 8-byte header, file_offs % IROM_ALIGN == addr % IROM_ALIGN.
+    // Padding needed so that, after the next 8-byte header, file_offs % iromAlign == addr % iromAlign.
     const alignmentDataNeeded = (seg: Segment): number => {
-        const alignPast = (seg.addr % IROM_ALIGN) - SEG_HEADER_LEN;
-        let padLen = IROM_ALIGN - (f.pos % IROM_ALIGN) + alignPast;
-        if (padLen === 0 || padLen === IROM_ALIGN) return 0;
+        const alignPast = (seg.addr % iromAlign) - SEG_HEADER_LEN;
+        let padLen = iromAlign - (f.pos % iromAlign) + alignPast;
+        if (padLen === 0 || padLen === iromAlign) return 0;
         // the padding block has a header as well
         padLen -= SEG_HEADER_LEN;
-        if (padLen < 0) padLen += IROM_ALIGN;
+        if (padLen < 0) padLen += iromAlign;
         return padLen;
     };
 
@@ -488,7 +589,7 @@ export async function elfToEspImage(elfBytes: Uint8Array, opts: ElfToImageOption
             saveSegment(pad, seg.name);
             totalSegments++;
         } else {
-            if ((f.pos + 8) % IROM_ALIGN !== seg.addr % IROM_ALIGN) throw new Error("flash segment misaligned");
+            if ((f.pos + 8) % iromAlign !== seg.addr % iromAlign) throw new Error("flash segment misaligned");
             saveFlashSegment(seg);
             flashSegments.shift();
             totalSegments++;

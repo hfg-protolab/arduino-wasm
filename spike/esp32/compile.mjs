@@ -193,7 +193,10 @@ for (let run = 0; run < opts.runs; run++) {
         let a = sub(manifest.cc1plus, { ...vars, SRC: header, SRC_BASE: basename(header), OBJ: gch });
         // header mode: cc1plus writes the PCH to the -o file given via --output-pch=
         const i = a.indexOf("-o");
-        a.splice(i, 2, "-o", "/tmp/pch.s", `--output-pch=${resolve(opts.project, gch)}`);
+        // (GCC ≥ 11 takes the file as a separate argument: `--output-pch <file>`)
+        const pchOut = resolve(opts.project, gch);
+        a.splice(i, 2, "-o", "/tmp/pch.s",
+            ...(Number(manifest.gccVersion?.split(".")[0]) >= 11 ? ["--output-pch", pchOut] : [`--output-pch=${pchOut}`]));
         const r = await runTool("cc1plus", a, { cwd: opts.project, mounts });
         check(r);
         continue;

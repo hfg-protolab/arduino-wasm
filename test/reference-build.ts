@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadConfig, PIO, REPO, run, WORK } from "../pack/common.ts";
+import { isPioarduino, loadConfig, PIO, pioEnv, REPO, run, WORK } from "../pack/common.ts";
 import { platformioIni } from "../pack/probe.ts";
 
 /** The files of a test sketch: test/sketches/<name>.ino or every file of test/sketches/<name>/. */
@@ -46,7 +46,7 @@ export async function pioRun(dir: string, board: string): Promise<{ ok: boolean;
     const fd = openSync(logPath, "w");
     try {
         const code = await new Promise<number>((res, rej) => {
-            const p = spawn(PIO, ["run", "-v", "-e", board], { cwd: dir, stdio: ["ignore", fd, fd] });
+            const p = spawn(PIO, pioRunArgs(board), { cwd: dir, stdio: ["ignore", fd, fd], env: pioEnv(loadConfig()) });
             p.on("error", rej);
             p.on("close", (c) => res(c ?? 1));
         });
@@ -56,13 +56,22 @@ export async function pioRun(dir: string, board: string): Promise<{ ok: boolean;
     }
 }
 
+/**
+ * `pio run -v`, except on pioarduino boards: its verbose mode crashes after the link (SCons
+ * TypeError printing the unsubstituted elf2image action), so firmware.bin would be missing.
+ */
+export function pioRunArgs(board: string): string[] {
+    const b = loadConfig().boards.find((x) => x.id === board);
+    return b && isPioarduino(b.platform) ? ["run", "-e", board] : ["run", "-v", "-e", board];
+}
+
 export function referenceBuild(sketch: string, board: string, force = false): string {
     const dir = refDir(sketch, board);
     const out = join(dir, ".pio/build", board);
     if (!force && existsSync(join(out, "firmware.elf"))) return out;
     rmSync(dir, { recursive: true, force: true });
     writeProject(dir, board, sketchFiles(sketch));
-    const r = run(PIO, ["run", "-v", "-e", board], { cwd: dir });
+    const r = run(PIO, pioRunArgs(board), { cwd: dir, env: pioEnv(loadConfig()) });
     writeFileSync(join(dir, "build.log"), r.stdout + r.stderr);
     if (r.code !== 0) throw new Error(`pio run ${sketch}.${board} failed:\n${(r.stdout + r.stderr).slice(-3000)}`);
     return out;

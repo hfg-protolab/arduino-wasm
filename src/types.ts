@@ -8,9 +8,15 @@ export type KnownBoard =
     | "uno" // atmelavr: uno
     | "nano" // atmelavr: nanoatmega328new
     | "nano-old" // atmelavr: nanoatmega328
-    | "esp32dev" // espressif32: esp32dev
-    | "esp32-s3" // espressif32: esp32-s3-devkitc-1
-    | "esp32-c3"; // espressif32: esp32-c3-devkitm-1
+    | "mega" // atmelavr: megaatmega2560
+    | "leonardo" // atmelavr: leonardo
+    | "esp32dev" // pioarduino espressif32: esp32dev
+    | "esp32-s3" // pioarduino espressif32: esp32-s3-devkitc-1
+    | "esp32-c3" // pioarduino espressif32: esp32-c3-devkitm-1
+    | "esp32-c6" // pioarduino espressif32: esp32-c6-devkitc-1
+    | "nano-esp32" // pioarduino espressif32: arduino_nano_esp32
+    | "nodemcu" // espressif8266: nodemcuv2
+    | "d1-mini"; // espressif8266: d1_mini
 
 /** A board id of the pack (`boards/<id>.json`); packs are configuration, so any string. */
 export type Board = KnownBoard | (string & {});

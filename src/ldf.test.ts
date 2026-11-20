@@ -53,3 +53,39 @@ describe("selectLibraries (PlatformIO chain mode)", () => {
         expect(r.libraries.map((l) => l.name)).toEqual(["Wire", "SPI", "Adafruit BusIO", "Adafruit GFX Library", "Adafruit SSD1306"]);
     });
 });
+
+describe("selectLibraries with scan data (PlatformIO's LDF step by step)", () => {
+    // Adafruit BusIO as on pioarduino: the order of its dependencies follows the files the
+    // sketch reaches first. pio run (esp32-s3, BusIO example spi_modetest): SPI, Wire, BusIO.
+    const root = (n: string) => `/opt/pio-libs/all/${n}`;
+    const scanned = (name: string, files: Record<string, string[]>, order: number): LibraryEntry => ({
+        name,
+        origin: "allowed",
+        includeDirs: [root(name)],
+        headers: Object.keys(files).filter((f) => f.endsWith(".h")),
+        deps: [],
+        objects: [],
+        scan: { root: root(name), files, sources: Object.keys(files).filter((f) => f.endsWith(".cpp")), order },
+    });
+    const LIBS2 = [
+        scanned("Adafruit BusIO", {
+            "Adafruit_BusIO_Register.h": ['"Adafruit_GenericDevice.h', '"Adafruit_I2CDevice.h', '"Adafruit_SPIDevice.h', "<Arduino.h"],
+            "Adafruit_BusIO_Register.cpp": ['"Adafruit_BusIO_Register.h'],
+            "Adafruit_GenericDevice.h": ["<Arduino.h"],
+            "Adafruit_I2CDevice.h": ["<Arduino.h", "<Wire.h"],
+            "Adafruit_I2CDevice.cpp": ['"Adafruit_I2CDevice.h'],
+            "Adafruit_SPIDevice.h": ["<Arduino.h", "<SPI.h"],
+            "Adafruit_SPIDevice.cpp": ['"Adafruit_SPIDevice.h'],
+        }, 0),
+        scanned("SPI", { "SPI.h": [], "SPI.cpp": ['"SPI.h'] }, 1),
+        scanned("Wire", { "Wire.h": [], "Wire.cpp": ['"Wire.h'] }, 2),
+    ];
+    test("a sketch reaching BusIO through the SPI device: SPI first", () => {
+        const r = selectLibraries([{ path: "main.ino.cpp", content: "#include <Adafruit_SPIDevice.h>\n" }], LIBS2);
+        expect(r.libraries.map((l) => l.name)).toEqual(["SPI", "Wire", "Adafruit BusIO"]);
+    });
+    test("… through the I2C device: Wire first", () => {
+        const r = selectLibraries([{ path: "main.ino.cpp", content: "#include <Adafruit_I2CDevice.h>\n" }], LIBS2);
+        expect(r.libraries.map((l) => l.name)).toEqual(["Wire", "SPI", "Adafruit BusIO"]);
+    });
+});

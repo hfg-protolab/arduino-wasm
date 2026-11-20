@@ -54,6 +54,16 @@ function boardRoot(pack: string, m: BoardManifest, workDir: string): string {
     return root;
 }
 
+/**
+ * The objects of a wasm link in pio's order, relative to the project dir: library objects
+ * (lib_archive = no, LDF post-order) first, then the sketch's objects in path order.
+ */
+export function linkObjects(m: BoardManifest, intermediates: Map<string, Uint8Array>, libraries: string[]): string[] {
+    const lib = libraries.flatMap((n) => m.libraries.find((l) => l.name === n)?.objects?.map((o) => o.path) ?? []);
+    const src = [...intermediates.keys()].filter((p) => p.startsWith(`${m.fs.cwd}/${m.fs.buildDir}/src/`) && p.endsWith(".o")).map((p) => p.slice(m.fs.cwd.length + 1)).sort();
+    return [...lib, ...src];
+}
+
 export interface NativeLinkResult {
     elf: Uint8Array;
     /** The native link's root directory (mirrors the virtual FS). */
@@ -81,7 +91,12 @@ export function nativeLink(pack: string, m: BoardManifest, intermediates: Map<st
     const b = loadConfig().boards.find((x) => x.id === m.id)!;
     mkdirSync(join(cwd, m.fs.buildDir), { recursive: true });
     rmSync(join(cwd, elf), { force: true });
-    const res = run(nativeTool(b, "ld"), argv, { cwd });
+    // The native avr-gcc links with GCC's LTO plugin, which shifts section ids (the Mega's
+    // trampoline order); the wasm ld emulates that (toolchains/avr/binutils-2.26-lto-plugin-ids.patch).
+    const ld = nativeTool(b, "ld");
+    const plugin = b.arch === "avr" ? join(dirname(ld), "../libexec/gcc/avr/7.3.0/liblto_plugin.so") : "";
+    const pre = plugin && existsSync(plugin) ? ["-plugin", plugin, `-plugin-opt=${join(dirname(plugin), "lto-wrapper")}`] : [];
+    const res = run(ld, [...pre, ...argv], { cwd });
     if (res.code !== 0 || !existsSync(join(cwd, elf))) throw new Error(`native ld failed:\n${res.stderr}`);
     return { elf: new Uint8Array(readFileSync(join(cwd, elf))), root };
 }

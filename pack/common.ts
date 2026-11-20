@@ -14,16 +14,23 @@ export interface BoardConfig {
     platform: string;
     board: string;
     framework: string;
-    arch: "avr" | "esp32";
+    arch: "avr" | "esp32" | "esp8266";
     /** Directory name under .build/toolchains. */
     toolchain: string;
-    chip?: "esp32" | "esp32s3" | "esp32c3";
+    chip?: "esp32" | "esp32s3" | "esp32c3" | "esp32c6" | "esp8266";
     /** Build core/libraries without -flto (decision 9). */
     noLto?: boolean;
     /** Generate a PCH of the Arduino.h prologue. */
     pch?: boolean;
     /** Split the framework archives into members + symbol index (lazy linking). */
     lazyLink?: boolean;
+    /**
+     * Ship archives and objects as they are (no `--strip-debug`). Needed where ld generates
+     * stubs: on avr6 (Mega 2560) the `.trampolines` come out in hash order of names made of
+     * input section ids, and stripping debug sections from the crt object or a library member
+     * shifts those ids, so the .hex would no longer match pio.
+     */
+    keepDebug?: boolean;
 }
 
 export interface PackConfig {
@@ -39,6 +46,18 @@ export function loadConfig(path = join(REPO, "pack/config.json")): PackConfig {
     return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/**
+ * Environment of every native PlatformIO build (probe and reference builds): SOURCE_DATE_EPOCH =
+ * midnight UTC of the pack version's date. Arduino-ESP32 3.x's core prints its build time
+ * (`__DATE__`/`__TIME__`, chip-debug-report.cpp); the pack ships that core precompiled, so the
+ * reference builds must expand those macros to the same instant (GCC honours SOURCE_DATE_EPOCH).
+ */
+export function pioEnv(cfg: Pick<PackConfig, "packVersion">): NodeJS.ProcessEnv {
+    const m = /^(\d{4})\.(\d{2})\.(\d{2})/.exec(cfg.packVersion);
+    const epoch = m ? Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!) / 1000 : 0;
+    return { ...process.env, SOURCE_DATE_EPOCH: String(epoch) };
+}
+
 /** Work dir: pio projects, logs, installed libraries. */
 export const WORK = process.env.PACK_WORK ?? join(REPO, ".build/pack-work");
 /**
@@ -46,8 +65,11 @@ export const WORK = process.env.PACK_WORK ?? join(REPO, ".build/pack-work");
  * PLATFORMIO_CORE_DIR=/opt/pio and pio on PATH. PLATFORMIO_PACKAGES_DIR / PIO override.
  */
 const CORE = process.env.PLATFORMIO_CORE_DIR ?? join(homedir(), ".platformio");
+export const PLATFORMS = process.env.PLATFORMIO_PLATFORMS_DIR ?? join(CORE, "platforms");
 export const PKG = process.env.PLATFORMIO_PACKAGES_DIR ?? join(CORE, "packages");
-export const PIO = process.env.PIO ?? (existsSync(join(CORE, "penv/bin/pio")) ? join(CORE, "penv/bin/pio") : "pio");
+// (with PLATFORMIO_CORE_DIR set — the pio-image — `pio` on PATH: pioarduino puts its own
+// PlatformIO into <core>/penv, which is not the pinned one)
+export const PIO = process.env.PIO ?? (!process.env.PLATFORMIO_CORE_DIR && existsSync(join(CORE, "penv/bin/pio")) ? join(CORE, "penv/bin/pio") : "pio");
 /**
  * Storage dir of the allowed libraries (`<dir>/all`, `<dir>/<arch>`, see "libraries" in
  * pack/config.json). Default: installed by the builder under WORK; the pio-image has them
@@ -141,19 +163,28 @@ export function shellSplit(line: string): string[] {
     return out;
 }
 
-export function toolchainPackage(arch: string, chip?: string): string {
-    if (arch === "avr") return "toolchain-atmelavr";
-    if (chip === "esp32c3") return "toolchain-riscv32-esp";
-    return chip === "esp32s3" ? "toolchain-xtensa-esp32s3" : "toolchain-xtensa-esp32";
+/** pioarduino (Arduino-ESP32 3.x, GCC 14): one xtensa toolchain for every chip, driven by dynconfig. */
+export const isPioarduino = (platform: string) => /pioarduino|platform-espressif32\.zip/.test(platform);
+
+type ToolchainOf = Pick<BoardConfig, "arch" | "chip" | "platform">;
+
+export function toolchainPackage(b: ToolchainOf): string {
+    if (b.arch === "avr") return "toolchain-atmelavr";
+    if (b.arch === "esp8266") return "toolchain-xtensa";
+    if (b.chip === "esp32c3" || b.chip === "esp32c6") return "toolchain-riscv32-esp";
+    if (isPioarduino(b.platform)) return "toolchain-xtensa-esp-elf";
+    return b.chip === "esp32s3" ? "toolchain-xtensa-esp32s3" : "toolchain-xtensa-esp32";
 }
 
-export function triple(arch: string, chip?: string): string {
-    if (arch === "avr") return "avr";
-    if (chip === "esp32c3") return "riscv32-esp-elf";
-    return chip === "esp32s3" ? "xtensa-esp32s3-elf" : "xtensa-esp32-elf";
+/** Prefix of the tools the build calls (the 3.x xtensa package has per-chip wrappers, e.g. xtensa-esp32-elf-objcopy). */
+export function triple(b: ToolchainOf): string {
+    if (b.arch === "avr") return "avr";
+    if (b.arch === "esp8266") return "xtensa-lx106-elf";
+    if (b.chip === "esp32c3" || b.chip === "esp32c6") return "riscv32-esp-elf";
+    return b.chip === "esp32s3" ? "xtensa-esp32s3-elf" : "xtensa-esp32-elf";
 }
 
-export const nativeTool = (b: BoardConfig, tool: string) => join(PKG, toolchainPackage(b.arch, b.chip), "bin", `${triple(b.arch, b.chip)}-${tool}`);
+export const nativeTool = (b: BoardConfig, tool: string) => join(PKG, toolchainPackage(b), "bin", `${triple(b)}-${tool}`);
 
 export const exists = existsSync;
 export const MB = (n: number) => (n / 1e6).toFixed(2);

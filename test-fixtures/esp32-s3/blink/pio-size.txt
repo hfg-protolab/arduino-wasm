@@ -1,2 +1,2 @@
-RAM:   [=         ]   5.8% (used 18880 bytes from 327680 bytes)
-Flash: [=         ]   8.3% (used 275877 bytes from 3342336 bytes)
+RAM:   [=         ]   6.7% (used 21984 bytes from 327680 bytes)
+Flash: [=         ]   9.7% (used 325392 bytes from 3342336 bytes)

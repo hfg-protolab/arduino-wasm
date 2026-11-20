@@ -1,0 +1,50 @@
+Xtensa chip configuration compiled in (wasm32 has no dlopen).
+
+The native xtensa-esp-elf toolchain picks the chip at run time: the driver passes
+-mdynconfig=xtensa_<chip>.so to cc1/cc1plus and --dynconfig=… to as/ld, which dlopen() it.
+Built with --disable-plugin, GCC uses the configuration compiled in from include/xtensa-config.h
+(our build copies the xtensa-overlays file of the chip there) and rejects any -mdynconfig=.
+With XTENSA_STATIC_DYNCONFIG ("xtensa_<chip>.so", defined in that xtensa-config.h) the option is
+accepted when it names exactly the compiled-in chip, so the command lines (and DW_AT_producer,
+which records -mdynconfig=) stay those of the native toolchain. The predefined __XCHAL_* macros
+are reduced to what the native .so exports (xtensa-dynconfig knows only config v1..v3).
+
+--- a/gcc/config/xtensa/xtensa-dynconfig.cc
++++ b/gcc/config/xtensa/xtensa-dynconfig.cc
+@@ -173,6 +173,20 @@ const void *xtensa_load_config (const char *name ATTRIBUTE_UNUSED,
+       const char *path = strcmp(xtensa_dynconfig_file, "") ? xtensa_dynconfig_file : getenv (CONFIG_ENV_NAME);
+ 
+       init = 1;
++#ifdef XTENSA_STATIC_DYNCONFIG
++      /* wasm build: the chip configuration is compiled in.  Accept -mdynconfig= (and
++	 XTENSA_GNU_CONFIG) naming exactly that configuration, so the command lines stay
++	 those of the native dynconfig toolchain (-mdynconfig= ends up in DW_AT_producer).  */
++      if (path && strcmp (lbasename (path), XTENSA_STATIC_DYNCONFIG) == 0)
++	path = NULL;
++      else if (path)
++	{
++	  fatal_error (input_location,
++		       "this compiler has %qs built in, not %qs",
++		       XTENSA_STATIC_DYNCONFIG, path);
++	  exit (FATAL_EXIT_CODE);
++	}
++#endif
+       if (path)
+ 	{
+ 	  fatal_error (input_location,
+@@ -194,7 +208,15 @@ XTENSA_CONFIG_INSTANCE_LIST;
+ #define XTENSA_CONFIG_ENTRY(a) "__" #a "=" STRINGIFY(a)
+ 
+ static const char * const xtensa_config_strings[] = {
++#ifdef XTENSA_STATIC_DYNCONFIG
++  /* As the native toolchain's xtensa_<chip>.so (built from xtensa-dynconfig, which knows
++     only v1..v3): no __XCHAL_DATA_WIDTH & co. among the predefined macros.  */
++  XTENSA_CONFIG_V1_ENTRY_LIST,
++  XTENSA_CONFIG_V2_ENTRY_LIST,
++  XTENSA_CONFIG_V3_ENTRY_LIST,
++#else
+   XTENSA_CONFIG_ENTRY_LIST,
++#endif
+   NULL,
+ };
+ 

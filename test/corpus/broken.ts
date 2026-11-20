@@ -8,8 +8,9 @@ export interface BrokenSketch {
     files: Array<{ path: string; content: string }>;
 }
 
-const ALL = ["uno", "nano", "nano-old", "esp32dev", "esp32-s3", "esp32-c3"];
-const SOME = ["uno", "esp32dev", "esp32-c3"];
+const ALL = ["uno", "nano", "nano-old", "mega", "leonardo", "esp32dev", "esp32-s3", "esp32-c3", "esp32-c6", "nano-esp32", "nodemcu", "d1-mini"];
+const SOME = ["uno", "leonardo", "esp32dev", "esp32-c3", "esp32-c6", "nano-esp32", "nodemcu"];
+const ESP32 = ["esp32dev", "esp32-s3", "esp32-c3", "esp32-c6", "nano-esp32"];
 
 export const BROKEN: BrokenSketch[] = [
     {
@@ -48,7 +49,7 @@ export const BROKEN: BrokenSketch[] = [
     },
     {
         id: "too_big_uno",
-        boards: ["uno", "nano"],
+        boards: ["uno", "nano", "leonardo"],
         files: [
             {
                 path: "TooBig.ino",
@@ -56,5 +57,27 @@ export const BROKEN: BrokenSketch[] = [
                     "#include <avr/pgmspace.h>\n\nconst uint8_t big1[17000] PROGMEM = {1, 2, 3};\nconst uint8_t big2[17000] PROGMEM = {4, 5, 6};\n\nvoid setup() {\n  Serial.begin(9600);\n}\n\nvoid loop() {\n  Serial.write(pgm_read_byte(&big1[analogRead(A0) * 16]));\n  Serial.write(pgm_read_byte(&big2[analogRead(A1) * 16]));\n}\n",
             },
         ],
+    },
+    {
+        // Arduino-ESP32 2.x LEDC API, removed in 3.x (ledcAttach/ledcWrite(pin, …) instead)
+        id: "ledc_2x_api",
+        boards: ESP32,
+        files: [{ path: "Ledc2x.ino", content: "const int LED = 2;\n\nvoid setup() {\n  ledcSetup(0, 5000, 8);\n  ledcAttachPin(LED, 0);\n}\n\nvoid loop() {\n  ledcWrite(0, 128);\n}\n" }],
+    },
+    {
+        // the other family's WiFi header
+        id: "esp8266_header_on_esp32",
+        boards: ["esp32dev", "esp32-c6"],
+        files: [{ path: "WrongFamily.ino", content: "#include <ESP8266WiFi.h>\n\nvoid setup() {\n  WiFi.begin(\"x\", \"y\");\n}\n\nvoid loop() {}\n" }],
+    },
+    {
+        id: "esp32_header_on_esp8266",
+        boards: ["nodemcu", "d1-mini"],
+        files: [{ path: "WrongFamily.ino", content: "#include <Preferences.h>\n\nPreferences prefs;\n\nvoid setup() {\n  prefs.begin(\"x\");\n}\n\nvoid loop() {}\n" }],
+    },
+    {
+        id: "too_big_esp8266",
+        boards: ["nodemcu"],
+        files: [{ path: "TooBig.ino", content: "const uint8_t big[1100000] PROGMEM = {1, 2, 3};\n\nvoid setup() {\n  Serial.begin(115200);\n}\n\nvoid loop() {\n  Serial.write(pgm_read_byte(&big[analogRead(A0) * 1000]));\n}\n" }],
     },
 ];

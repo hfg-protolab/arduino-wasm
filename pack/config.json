@@ -1,6 +1,6 @@
 {
   "$comment": "Pack builder input. Boards and libraries are data: edit this file (or pass --config) to build a pack for another set. Library specs use PlatformIO package syntax; 'dir' groups libraries by arch like the AI Hub image (/opt/pio-libs/<dir>): 'all' = every board.",
-  "packVersion": "2026.11.19",
+  "packVersion": "2026.11.20",
   "virtualRoots": {
     "packages": "/opt/pio/packages",
     "libs": "/opt/pio-libs",
@@ -10,9 +10,15 @@
     { "id": "uno", "name": "Arduino Uno", "platform": "atmelavr@5.3.0", "board": "uno", "framework": "arduino", "arch": "avr", "toolchain": "avr", "noLto": true },
     { "id": "nano", "name": "Arduino Nano", "platform": "atmelavr@5.3.0", "board": "nanoatmega328new", "framework": "arduino", "arch": "avr", "toolchain": "avr", "noLto": true },
     { "id": "nano-old", "name": "Arduino Nano (old bootloader)", "platform": "atmelavr@5.3.0", "board": "nanoatmega328", "framework": "arduino", "arch": "avr", "toolchain": "avr", "noLto": true },
-    { "id": "esp32dev", "name": "ESP32 Dev Module", "platform": "espressif32@7.1.3", "board": "esp32dev", "framework": "arduino", "arch": "esp32", "toolchain": "esp32", "chip": "esp32", "pch": true, "lazyLink": true },
-    { "id": "esp32-s3", "name": "ESP32-S3 DevKitC-1", "platform": "espressif32@7.1.3", "board": "esp32-s3-devkitc-1", "framework": "arduino", "arch": "esp32", "toolchain": "esp32s3", "chip": "esp32s3", "pch": true, "lazyLink": true },
-    { "id": "esp32-c3", "name": "ESP32-C3 DevKitM-1", "platform": "espressif32@7.1.3", "board": "esp32-c3-devkitm-1", "framework": "arduino", "arch": "esp32", "toolchain": "esp32c3", "chip": "esp32c3", "pch": true, "lazyLink": true }
+    { "id": "mega", "name": "Arduino Mega 2560", "platform": "atmelavr@5.3.0", "board": "megaatmega2560", "framework": "arduino", "arch": "avr", "toolchain": "avr", "noLto": true, "keepDebug": true },
+    { "id": "leonardo", "name": "Arduino Leonardo", "platform": "atmelavr@5.3.0", "board": "leonardo", "framework": "arduino", "arch": "avr", "toolchain": "avr", "noLto": true },
+    { "id": "esp32dev", "name": "ESP32 Dev Module", "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip", "board": "esp32dev", "framework": "arduino", "arch": "esp32", "toolchain": "esp32-v3", "chip": "esp32", "pch": true, "lazyLink": true },
+    { "id": "esp32-s3", "name": "ESP32-S3 DevKitC-1", "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip", "board": "esp32-s3-devkitc-1", "framework": "arduino", "arch": "esp32", "toolchain": "esp32s3-v3", "chip": "esp32s3", "pch": true, "lazyLink": true },
+    { "id": "esp32-c3", "name": "ESP32-C3 DevKitM-1", "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip", "board": "esp32-c3-devkitm-1", "framework": "arduino", "arch": "esp32", "toolchain": "riscv32-v3", "chip": "esp32c3", "pch": true, "lazyLink": true },
+    { "id": "esp32-c6", "name": "ESP32-C6 DevKitC-1", "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip", "board": "esp32-c6-devkitc-1", "framework": "arduino", "arch": "esp32", "toolchain": "riscv32-v3", "chip": "esp32c6", "pch": true, "lazyLink": true },
+    { "id": "nano-esp32", "name": "Arduino Nano ESP32", "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip", "board": "arduino_nano_esp32", "framework": "arduino", "arch": "esp32", "toolchain": "esp32s3-v3", "chip": "esp32s3", "pch": true, "lazyLink": true },
+    { "id": "nodemcu", "name": "NodeMCU 1.0 (ESP-12E)", "platform": "espressif8266@4.2.1", "board": "nodemcuv2", "framework": "arduino", "arch": "esp8266", "toolchain": "esp8266", "chip": "esp8266", "lazyLink": true },
+    { "id": "d1-mini", "name": "WeMos D1 mini", "platform": "espressif8266@4.2.1", "board": "d1_mini", "framework": "arduino", "arch": "esp8266", "toolchain": "esp8266", "chip": "esp8266", "lazyLink": true }
   ],
   "libraries": [
     { "dir": "all", "spec": "adafruit/Adafruit NeoPixel@1.15.5" },
@@ -20,9 +26,11 @@
     { "dir": "all", "spec": "adafruit/Adafruit Unified Sensor@1.1.15" },
     { "dir": "all", "spec": "marcoschwartz/LiquidCrystal_I2C@1.1.4" },
     { "dir": "all", "spec": "adafruit/Adafruit SSD1306@2.5.17" },
+    { "dir": "avr", "spec": "arduino-libraries/Keyboard@1.0.6" },
+    { "dir": "avr", "spec": "arduino-libraries/Mouse@1.0.1" },
     { "dir": "esp32", "spec": "madhephaestus/ESP32Servo@3.2.1" }
   ],
-  "$extraHeadersComment": "Curated ESP-IDF headers a sketch may include directly (on top of the closure of Arduino.h + framework/allowed libraries + C/C++ std headers). Confirmed 2026-11-19 (incl. fb_gfx.h for the camera examples, esp32/ulp.h for ULP deep sleep). Entries are #include names; '*' globs one directory level.",
+  "$extraHeadersComment": "Curated ESP-IDF headers a sketch may include directly (on top of the closure of Arduino.h + framework/allowed libraries + C/C++ std headers). Confirmed 2026-11-19 (incl. fb_gfx.h for the camera examples, esp32/ulp.h for ULP deep sleep); 2026-11-20: IDF 5 names added (esp_wpa2.h → esp_eap_client.h, esp_spi_flash.h → spi_flash_mmap.h/esp_flash.h, esp_adc_cal.h → esp_adc/*; the old names stay where IDF 5.5 still has them, else the builder lists them as not includable), ESP8266 SDK headers. Entries are #include names; '*' globs one directory level.",
   "extraHeaders": {
     "esp32": [
       "esp_wifi.h", "esp_wifi_types.h", "esp_wps.h", "esp_wpa2.h", "esp_now.h", "esp_sleep.h", "esp_system.h", "esp_log.h", "esp_err.h",
@@ -31,7 +39,14 @@
       "esp_http_server.h", "esp_https_ota.h", "esp_adc_cal.h", "esp_intr_alloc.h", "esp_pm.h", "esp_spi_flash.h",
       "esp32-hal.h", "nvs.h", "nvs_flash.h", "mdns.h", "lwip/sockets.h", "lwip/netdb.h", "rom/rtc.h", "soc/soc.h", "soc/rtc_cntl_reg.h",
       "driver/*.h", "freertos/*.h", "esp_bt.h", "esp_gap_ble_api.h", "esp_gatts_api.h", "esp_bt_main.h",
-      "esp_camera.h", "fb_gfx.h", "esp32/ulp.h", "sdkconfig.h"
+      "esp_camera.h", "fb_gfx.h", "esp32/ulp.h", "sdkconfig.h",
+      "esp_eap_client.h", "spi_flash_mmap.h", "esp_flash.h", "esp_cpu.h", "esp_rom_sys.h", "rom/ets_sys.h", "esp_netif_sntp.h", "esp_sntp.h",
+      "esp_adc/adc_oneshot.h", "esp_adc/adc_continuous.h", "esp_adc/adc_cali.h", "esp_adc/adc_cali_scheme.h", "esp_bt_device.h", "esp_gattc_api.h",
+      "esp_gap_bt_api.h", "esp_hf_client_api.h", "esp_hf_client_legacy_api.h", "soc/rtc_io_reg.h", "driver/rtc_io.h"
+    ],
+    "esp8266": [
+      "user_interface.h", "osapi.h", "ets_sys.h", "c_types.h", "os_type.h", "mem.h", "gpio.h", "spi_flash.h", "espnow.h", "sntp.h", "coredecls.h", "pgmspace.h",
+      "umm_malloc/*.h", "sys/config.h", "lwip/napt.h"
     ],
     "avr": []
   },

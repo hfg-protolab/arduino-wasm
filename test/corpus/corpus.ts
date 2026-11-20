@@ -2,13 +2,17 @@
  * The verification corpus: which sketches on which boards (Node/Bun only).
  *
  * - `arduino/…`  Arduino's built-in examples 01.Basics–04.Communication (vendored in
- *                test/corpus/examples/arduino, public domain / CC0) — every board.
+ *                test/corpus/examples/arduino, public domain / CC0) — every board; 09.USB
+ *                (Keyboard/Mouse) only on boards with native USB (NATIVE_USB).
  * - `lib/…`      every example of every installed allowed library and its dependencies
  *                (.build/pack-work/libs/<dir>/<lib>/examples, installed by pack/build.ts):
  *                dir "all" → every board, dir "<arch>" → the boards of that arch.
  * - `esp32/…`    arduino-esp32's own examples of the ESP32, WiFi and Preferences libraries —
- *                ESP32 boards; a `.skip.<chip>` file in the example skips that chip (the
- *                example's own CI marker).
+ *                ESP32 boards; the example's own CI marker decides per chip: `.skip.<chip>`
+ *                (2.x), `ci.yml` (3.x: `targets: {<chip>: false}`, `requires` / `requires_any`
+ *                against the chip's sdkconfig in framework-arduinoespressif32-libs).
+ * - `esp8266/…`  the ESP8266 core's own examples (esp8266, ESP8266WiFi, EEPROM, Servo,
+ *                Ticker) — ESP8266 boards.
  * - `broken/…`   deliberately broken sketches (test/corpus/broken.ts): diagnostics parity.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -27,6 +31,9 @@ export interface CorpusSketch {
     /** Deliberately broken: the native and the wasm diagnostics must agree. */
     broken?: boolean;
 }
+
+/** PlatformIO boards whose MCU talks USB itself (Keyboard/Mouse/PluggableUSB): 09.USB runs there. */
+const NATIVE_USB = new Set(["leonardo"]);
 
 const SRC_RE = /\.(ino|pde|cpp|c|h|hpp)$/;
 
@@ -69,12 +76,21 @@ export function loadCorpus(): CorpusSketch[] {
     const out: CorpusSketch[] = [];
     const add = (id: string, dir: string, on: string[], skipFiles = false) => {
         const skip: Record<string, string> = {};
-        if (skipFiles) for (const b of boards) if (b.chip && existsSync(join(dir, `.skip.${b.chip}`))) skip[b.id] = `example marked .skip.${b.chip}`;
+        if (skipFiles)
+            for (const b of boards) {
+                if (!b.chip || !on.includes(b.id)) continue;
+                if (existsSync(join(dir, `.skip.${b.chip}`))) skip[b.id] = `example marked .skip.${b.chip}`;
+                const why = existsSync(join(dir, "ci.yml")) ? ciYmlSkips(readFileSync(join(dir, "ci.yml"), "utf8"), b.chip) : null;
+                if (why) skip[b.id] = `ci.yml: ${why}`;
+            }
         out.push({ id, files: sketchSources(dir), boards: on, skip });
     };
 
     const arduino = join(REPO, "test/corpus/examples/arduino");
-    for (const d of sketchDirs(arduino)) add(`arduino/${relative(arduino, d)}`, d, ids(() => true));
+    for (const d of sketchDirs(arduino)) {
+        const id = relative(arduino, d);
+        add(`arduino/${id}`, d, ids((b) => !id.startsWith("09.USB/") || NATIVE_USB.has(b.board)));
+    }
 
     for (const dirName of ["all", ...new Set(boards.map((b) => b.arch))]) {
         const root = join(libsRoot(), dirName);
@@ -91,8 +107,63 @@ export function loadCorpus(): CorpusSketch[] {
         for (const d of sketchDirs(ex)) add(`esp32/${lib}/${relative(ex, d)}`, d, ids((b) => b.arch === "esp32"), true);
     }
 
+    const fw8266 = join(PKG, frameworkPackage("esp8266"), "libraries");
+    for (const lib of ["esp8266", "ESP8266WiFi", "EEPROM", "Servo", "Ticker"]) {
+        const ex = join(fw8266, lib, "examples");
+        for (const d of sketchDirs(ex)) add(`esp8266/${lib}/${relative(ex, d)}`, d, ids((b) => b.arch === "esp8266"));
+    }
+
     for (const b of BROKEN) out.push({ id: `broken/${b.id}`, files: b.files, boards: b.boards, skip: {}, broken: true });
     return out;
+}
+
+/** sdkconfig of a chip in Arduino-ESP32 3.x's prebuilt libraries: CONFIG_X=y lines. */
+const sdkconfigs = new Map<string, Set<string>>();
+function sdkconfig(chip: string): Set<string> {
+    let s = sdkconfigs.get(chip);
+    if (!s) {
+        const p = join(PKG, "framework-arduinoespressif32-libs", chip, "sdkconfig");
+        s = new Set(existsSync(p) ? readFileSync(p, "utf8").split("\n").filter((l) => /^CONFIG_\w+=/.test(l)).map((l) => l.trim()) : []);
+        sdkconfigs.set(chip, s);
+    }
+    return s;
+}
+
+/**
+ * arduino-esp32 3.x `ci.yml` of an example (its own CI's rules): why the chip is skipped, or null.
+ * `targets: {<chip>: false}`; `requires:` all of, `requires_any:` one of the sdkconfig lines.
+ * (`fqbn`/`fqbn_append` — e.g. a bigger partition — are not applied: such a sketch is compared
+ * as pio builds it with the board's defaults, or skipped when that does not compile.)
+ */
+export function ciYmlSkips(text: string, chip: string): string | null {
+    let section = "";
+    const requires: string[] = [];
+    const any: string[] = [];
+    for (const raw of text.split("\n")) {
+        const line = raw.replace(/#.*$/, "").trimEnd();
+        if (!line.trim()) continue;
+        const top = /^(\w+):\s*(.*)$/.exec(line);
+        if (top) {
+            section = top[1]!;
+            continue;
+        }
+        const t = /^\s+(\w+):\s*(\w+)\s*$/.exec(line);
+        if (section === "targets" && t && t[1] === chip && t[2] === "false") return `targets.${chip}: false`;
+        const item = /^\s*-\s*(\S+)\s*$/.exec(line);
+        if (item && section === "requires") requires.push(item[1]!);
+        if (item && section === "requires_any") any.push(item[1]!);
+    }
+    const cfg = sdkconfig(chip);
+    if (!cfg.size) return null;
+    // entries are regular expressions over the sdkconfig lines (CONFIG_CAMERA_TASK_STACK_SIZE=[0-9]+)
+    const has = (r: string) => {
+        const re = new RegExp(`^${r}$`);
+        return [...cfg].some((l) => re.test(l));
+    };
+    const missing = requires.filter((r) => !has(r));
+    if (missing.length) return `requires ${missing.join(", ")}`;
+    if (any.length && !any.some(has)) return `requires one of ${any.join(", ")}`;
+    return null;
 }
 
 /** `--sketch` filter: comma-separated substrings of the id; `*` is a wildcard. */

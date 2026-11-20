@@ -103,8 +103,9 @@ interface BoardManifest {
   /**
    * argv templates (no argv[0]) taken from the native driver's `-###`. Placeholders:
    *   ${SRC}       source path as pio passes it ("src/main.ino.cpp")
-   *   ${DUMPBASE}  basename of the source
+   *   ${DUMPBASE}  basename of the source (GCC ≥ 11: `-dumpbase ${DUMPBASE}.cpp`)
    *   ${OBJ}       object path (".pio/build/<env>/src/main.ino.cpp.o")
+   *   ${OBJDIR}    directory of ${OBJ} (GCC ≥ 11: `-dumpdir ${OBJDIR}/`)
    *   ${ASM}       cc1/cc1plus output = as input ("/tmp/<n>.s")
    *   ${LIBINC}    expands to 0..n arguments: "-I<dir>" for each used library, in library order
    */
@@ -127,7 +128,10 @@ interface BoardManifest {
   libraries: LibraryEntry[];
 
   link: {
-    /** ld argv template. ${OBJS} → sketch objects (pio order), ${LIBS} → used library archives, ${ELF}. */
+    /**
+     * ld argv template. ${OBJS} → library objects of the used libraries (pioarduino, lib_archive = no)
+     * then the sketch objects (pio order), ${LIBS} → used library archives, ${ELF}.
+     */
     ld: string[];
     /** Files ld always needs (crt objects, linker scripts, AVR: every framework archive), at their virtual paths. */
     files: Array<{ path: string } & FileRef>;
@@ -143,8 +147,10 @@ interface BoardManifest {
     | { kind: "hex"; remove: string[] }                       // avr: firmware.hex (objcopy -O ihex -R .eeprom)
     | { kind: "esp-image"; image: ElfToImageOptions; appAddress: number;
         images: Array<{ name: string; address: number } & FileRef> };   // bootloader, partitions, boot_app0
+    | { kind: "esp8266-image"; image: Esp8266ImageOptions; eboot: FileRef; appAddress: number };
+      // esp8266: elf2bin.py (eboot + app + CRC) → one firmware.bin at 0x0 (src/esp8266-image.ts)
 
-  size: { family: "avr" | "esp32"; flashMax: number; ramMax: number };
+  size: { family: "avr" | "esp32" | "esp8266"; flashMax: number; ramMax: number };
 
   /** Download sizes measured by the builder (raw / Brotli), for UI and reports. */
   stats: Record<string, { raw: number; brotli: number }>;
@@ -162,6 +168,11 @@ interface LibraryEntry {
   deps: string[];
   /** Precompiled, debug-stripped archive at its pio path (relative to cwd); absent for header-only. */
   archive?: { path: string } & FileRef;
+  /**
+   * pioarduino builds libraries with `lib_archive = no`: their objects (debug-stripped, pio's paths
+   * and order) are linked one by one, before the sketch's objects, instead of an archive.
+   */
+  objects?: Array<{ path: string } & FileRef>;
 }
 ```
 
@@ -211,9 +222,11 @@ AVR (`lazy` absent): every framework archive is in `link.files` (≈ 0.15 MB Bro
 
 ## PCH
 
-`pch.gch` is produced by the pack's own `cc1plus.wasm` (GCC 8 cannot relocate a PCH; the patched
+`pch.gch` is produced by the pack's own `cc1plus.wasm` (GCC 8/10 cannot relocate a PCH; the patched
 compiler maps it at a fixed arena address that is deterministic for one binary), from the
-`compile.cpp.cc1plus` template with `${LIBINC}` empty and `--output-pch`. The runtime puts it at
+`compile.cpp.cc1plus` template with `${LIBINC}` empty and `--output-pch` (GCC ≥ 11: two
+arguments, and generated from `/pch/Arduino.h` itself, since GCC ≥ 11 writes the path the PCH was
+made from into the assembly). The runtime puts it at
 `pch.path`, a copy of the real `Arduino.h` next to it, and prepends `pch.args` to the cc1plus argv
 of the generated `.ino.cpp` only (which starts with `#include <Arduino.h>` anyway); other `.cpp`
 files compile without it. Measured: the code is identical with and without PCH.

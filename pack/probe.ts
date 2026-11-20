@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { availableParallelism } from "node:os";
-import { type BoardConfig, LIBS, type PackConfig, PIO, PKG, pool, run, runAsync, shellSplit, toolchainPackage, WORK } from "./common.ts";
+import { type BoardConfig, LIBS, pioEnv, type PackConfig, PIO, PKG, pool, run, runAsync, shellSplit, toolchainPackage, WORK } from "./common.ts";
 
 export interface LibraryDir {
     /** Library directory name (= PlatformIO library name for framework libraries). */
@@ -25,7 +25,8 @@ export const projectDir = (board: string) => join(WORK, "probe", board);
 export const probeLog = (board: string) => join(WORK, "probe", `${board}.log`);
 
 export function frameworkPackage(arch: string): string {
-    return arch === "avr" ? "framework-arduino-avr" : "framework-arduinoespressif32";
+    if (arch === "avr") return "framework-arduino-avr";
+    return arch === "esp8266" ? "framework-arduinoespressif8266" : "framework-arduinoespressif32";
 }
 
 export function installLibraries(cfg: PackConfig) {
@@ -94,19 +95,33 @@ export async function probe(cfg: PackConfig, b: BoardConfig, opts: { force?: boo
     }
     let tus: ProbeTu[] = libs.flatMap((lib) => topHeaders(lib.path).map((header) => ({ lib, header, file: `probe_${safe(lib.dirName)}__${safe(header)}.cpp` })));
     const droppedHeaders: string[] = [];
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
         rmSync(join(dir, "src"), { recursive: true, force: true });
         mkdirSync(join(dir, "src"), { recursive: true });
         writeFileSync(join(dir, "platformio.ini"), platformioIni(cfg, b));
         writeFileSync(join(dir, "src/main.ino"), "void setup() {\n}\n\nvoid loop() {\n}\n");
         writeFileSync(join(dir, "src/probe_c.c"), "int probe_c(int x) { return x + 1; }\n");
         for (const t of tus) writeFileSync(join(dir, "src", t.file), `#include <Arduino.h>\n#include <${t.header}>\n`);
-        rmSync(join(dir, ".pio"), { recursive: true, force: true });
+        // a retry keeps .pio: SCons rebuilds only what changed (a framework build is minutes on 3.x)
+        if (attempt === 0) rmSync(join(dir, ".pio"), { recursive: true, force: true });
         console.log(`[${b.id}] pio run -v (attempt ${attempt + 1}, ${tus.length} probe TUs)`);
-        const r = run(PIO, ["run", "-v", "-e", b.id], { cwd: dir });
+        const r = run(PIO, ["run", "-v", "-e", b.id], { cwd: dir, env: pioEnv(cfg) });
         const log = r.stdout + r.stderr;
         writeFileSync(logPath, log);
         const failed = /\*\*\* \[\.pio\/build\/[^/]+\/src\/probe_/.test(log);
+        // pioarduino links every library object (lib_archive = no): a library that cannot link in
+        // the board's default configuration (Zigbee without ZigbeeMode, …) fails the whole link.
+        // Natively a sketch using it fails the same way; leave the library out of the pack.
+        if (!failed && /\*\*\* \[\.pio\/build\/[^/]+\/firmware\.elf\] Error/.test(log)) {
+            const bad = new Set<string>();
+            for (const m of log.matchAll(/\.pio\/build\/[^/]+\/lib[0-9a-f]+\/([^/\n]+)\/[^\n]*?\.o: in function/g)) bad.add(m[1]!);
+            const before = tus.length;
+            tus = tus.filter((t) => !bad.has(t.lib.dirName));
+            if (!bad.size || tus.length === before) throw new Error(`[${b.id}] probe link failed:\n${log.slice(-4000)}`);
+            for (const l of bad) droppedHeaders.push(`${l}/* (does not link)`);
+            console.log(`[${b.id}] dropping libraries that do not link: ${[...bad].join(", ")}`);
+            continue;
+        }
         if (!failed) {
             if (!/firmware\.elf/.test(log)) throw new Error(`[${b.id}] probe build did not reach the link:\n${log.slice(-4000)}`);
             const kept = new Set(tus.map((t) => t.lib.dirName));
@@ -121,7 +136,7 @@ export async function probe(cfg: PackConfig, b: BoardConfig, opts: { force?: boo
         const oi = argv.indexOf("-o");
         argv.splice(oi, 2);
         argv.pop(); // the source
-        const cc = join(PKG, toolchainPackage(b.arch, b.chip), "bin", argv[0]!);
+        const cc = join(PKG, toolchainPackage(b), "bin", argv[0]!);
         const ok = await pool(tus, availableParallelism(), async (t) => (await runAsync(cc, [...argv.slice(1).filter((a) => a !== "-c"), "-fsyntax-only", join("src", t.file)], { cwd: dir })).code === 0);
         const bad = tus.filter((_, i) => !ok[i]);
         if (!bad.length) throw new Error(`[${b.id}] probe failed but every TU compiles alone:\n${log.slice(-3000)}`);

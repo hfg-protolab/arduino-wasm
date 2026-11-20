@@ -1,26 +1,28 @@
 firmware.elf  :
-section                  size         addr
-.rtc.text                  16   1342177280
-.rtc.force_fast             0   1342177296
-.rtc_noinit                16   1342177296
-.rtc.force_slow             0   1342177312
-.iram0.text             47012   1077411840
-.dram0.dummy            47104   1070071808
-.dram0.data              7548   1070118912
-.noinit                     0   1070126460
-.dram0.bss               6448   1070126464
-.flash.text            159758   1107296288
-.flash_rodata_dummy    196608   1006632992
-.flash.appdesc            256   1006829600
-.flash.rodata           44992   1006829856
-.eh_frame               11160   1006874848
-.flash.rodata_noload        0   1006886008
-.iram0.text_end            92   1077458852
-.iram0.data                 0   1077458944
-.iram0.bss                  0   1077458944
-.dram0.heap_start           0   1070132912
-.comment                   93            0
-.riscv.attributes          55            0
-Total                  521158
+section                 size         addr
+.rtc.text                  0   1342177280
+.rtc.force_fast            0   1342177280
+.rtc_noinit                0   1342177280
+.rtc.force_slow           32   1342177280
+.rtc_reserved             40   1342185432
+.iram0.text            57390   1077411840
+.dram0.dummy           57856   1070071808
+.dram0.data             7806   1070129664
+.noinit                    2   1070137470
+.dram0.bss              6432   1070137472
+.flash.text           173438   1107296288
+.flash_rodata_dummy   196608   1006632992
+.flash.appdesc           256   1006829600
+.flash.rodata          64348   1006829856
+.eh_frame_hdr              0   1006894204
+.eh_frame              10748   1006894204
+.flash.tdata               0   1006904952
+.iram0.text_end          466   1077469230
+.iram0.data                0   1077469696
+.iram0.bss                 0   1077469696
+.dram0.heap_start          0   1070143904
+.comment                  85            0
+.riscv.attributes         72            0
+Total                 575579
 
 

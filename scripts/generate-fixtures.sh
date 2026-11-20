@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates test-fixtures from a PlatformIO install (atmelavr@5.3.0, espressif32@7.1.3).
+# Regenerates test-fixtures from a PlatformIO install (atmelavr@5.3.0, pioarduino 55.03.39 =
+# Arduino-ESP32 3.3.9, espressif8266@4.2.1).
 # Usage: scripts/generate-fixtures.sh [workdir]
 #
 # Run it in the pio-image (pack/pio-image), so the fixtures carry /opt/pio/... paths and not the
@@ -10,7 +11,8 @@
 # - sketches/<name>/       source sketches built natively with `pio run`
 # - <board>/<sketch>/       firmware.elf (debug-stripped to stay small and free of build paths),
 #                           the reference outputs made by the pinned tools from exactly that ELF
-#                           (pio's firmware.hex / esptool.py elf2image), `size -A -d`, pio's size line
+#                           (pio's firmware.hex / esptool 5.3.0 elf2image / elf2bin.py), `size -A -d`,
+#                           pio's size line
 # - hex/{ext,seg}           uno/blink moved to load addresses past 64 KiB (extended segment /
 #                           linear address records), .hex by avr-objcopy -O ihex -R .eeprom
 # - ino/<case>/             .ino inputs + expected.cpp from PlatformIO's own InoToCPPConverter
@@ -27,15 +29,19 @@ else # pio-image: PlatformIO installed into the system python
   PIO="${PIO:-pio}"
   PY="${PIO_PYTHON:-python3}"
 fi
-ESPTOOL="$PK/tool-esptoolpy/esptool.py"
+# esptool 5.3.0 (pioarduino's penv; `esptool` on PATH otherwise)
+ESPTOOL="$CORE/penv/bin/esptool"; [ -x "$ESPTOOL" ] || ESPTOOL=esptool
+PIOARDUINO=https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip
 export PLATFORMIO_SETTING_ENABLE_TELEMETRY=No
 
 # board id : pio board : toolchain prefix : esptool chip : flash freq : flash size
 BOARDS=(
   "uno:uno:toolchain-atmelavr/bin/avr:::"
-  "esp32dev:esp32dev:toolchain-xtensa-esp32/bin/xtensa-esp32-elf:esp32:40m:4MB"
-  "esp32-s3:esp32-s3-devkitc-1:toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf:esp32s3:80m:8MB"
+  "esp32dev:esp32dev:toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf:esp32:40m:4MB"
+  "esp32-s3:esp32-s3-devkitc-1:toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf:esp32s3:80m:8MB"
   "esp32-c3:esp32-c3-devkitm-1:toolchain-riscv32-esp/bin/riscv32-esp-elf:esp32c3:80m:4MB"
+  "esp32-c6:esp32-c6-devkitc-1:toolchain-riscv32-esp/bin/riscv32-esp-elf:esp32c6:80m:8MB"
+  "nodemcuv2:nodemcuv2:toolchain-xtensa/bin/xtensa-lx106-elf:esp8266:40:4M"
 )
 
 build() { # sketch board pioBoard platform
@@ -53,7 +59,9 @@ board = $pioboard
 framework = arduino
 lib_ldf_mode = chain
 INI
-  (cd "$proj" && "$PIO" run -e "$board" -v > "$proj/$board.log" 2>&1)
+  # pioarduino's `pio run -v` crashes after the link (SCons TypeError printing elf2image): no -v there
+  local v=-v; [ "$platform" = "$PIOARDUINO" ] && v=
+  (cd "$proj" && "$PIO" run -e "$board" $v > "$proj/$board.log" 2>&1)
 }
 
 for spec in "${BOARDS[@]}"; do
@@ -61,8 +69,8 @@ for spec in "${BOARDS[@]}"; do
   for sketchdir in "$FIX/sketches"/*/; do
     sketch=$(basename "$sketchdir")
     # Sketches named avr-* only build for AVR, esp-* only for ESP32.
-    case "$sketch:$board" in avr-*:esp*|esp-*:uno) continue ;; esac
-    if [ "$board" = uno ]; then platform=atmelavr@5.3.0; else platform=espressif32@7.1.3; fi
+    case "$sketch:$board" in avr-*:esp*|avr-*:node*|esp-*:uno|esp-*:node*) continue ;; esac
+    case "$board" in uno) platform=atmelavr@5.3.0 ;; nodemcuv2) platform=espressif8266@4.2.1 ;; *) platform=$PIOARDUINO ;; esac
     echo "== $board / $sketch"
     build "$sketch" "$board" "$pioboard" "$platform"
     B="$WORK/$sketch/.pio/build/$board"
@@ -72,9 +80,12 @@ for spec in "${BOARDS[@]}"; do
     "$PK/$tc-strip" --strip-debug -o "$OUT/firmware.elf" "$B/firmware.elf"
     if [ "$board" = uno ]; then
       cp "$B/firmware.hex" "$OUT/firmware.hex"
+    elif [ "$chip" = esp8266 ]; then
+      # elf2bin.py output as pio wrote it (elf2bin reads only loaded sections: stripping changes nothing)
+      cp "$B/firmware.elf" "$OUT/firmware.elf"; cp "$B/firmware.bin" "$OUT/firmware.bin"
     else
-      # Exactly the flags PlatformIO's espressif32 builder passes (see its -v log).
-      "$PY" "$ESPTOOL" --chip "$chip" elf2image --flash_mode dio --flash_freq "$freq" --flash_size "$fsize" \
+      # Exactly the flags pioarduino's builder passes (board JSON, builder/main.py ElfToBin).
+      "$ESPTOOL" --chip "$chip" elf2image --flash-mode dio --flash-freq "$freq" --flash-size "$fsize" \
         --elf-sha256-offset 0xb0 -o "$OUT/firmware.bin" "$OUT/firmware.elf" > /dev/null
     fi
     # relative path: the first line of `size -A` names the file
@@ -93,15 +104,21 @@ mkdir -p "$FIX/hex"
 for n in ext seg; do "$AVR-objcopy" -O ihex -R .eeprom "$FIX/hex/$n.elf" "$FIX/hex/$n.hex"; done
 
 # Bootloaders (no --elf-sha256-offset), as PlatformIO builds bootloader.bin.
-for spec in "esp32:esp32:bootloader_dio_40m:40m:4MB:toolchain-xtensa-esp32/bin/xtensa-esp32-elf" \
-            "esp32c3:esp32c3:bootloader_qio_80m:80m:4MB:toolchain-riscv32-esp/bin/riscv32-esp-elf"; do
-  IFS=: read -r chip sdk name freq fsize tc <<<"$spec"
+# (the bootloader ELF name is the one in the board's pio log: bootloader_<mode>_<freq>.elf)
+for spec in "esp32:esp32dev:40m:4MB:toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf" \
+            "esp32s3:esp32-s3:80m:8MB:toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf" \
+            "esp32c3:esp32-c3:80m:4MB:toolchain-riscv32-esp/bin/riscv32-esp-elf" \
+            "esp32c6:esp32-c6:80m:8MB:toolchain-riscv32-esp/bin/riscv32-esp-elf"; do
+  IFS=: read -r chip board freq fsize tc <<<"$spec"
   OUT="$FIX/bootloader/$chip"
   mkdir -p "$OUT"
-  "$PK/$tc-strip" --strip-debug -o "$OUT/bootloader.elf" "$PK/framework-arduinoespressif32/tools/sdk/$sdk/bin/$name.elf"
-  "$PY" "$ESPTOOL" --chip "$chip" elf2image --flash_mode dio --flash_freq "$freq" --flash_size "$fsize" \
+  elf=$(grep -o "[^ ]*framework-arduinoespressif32-libs/$chip/bin/bootloader_[a-z0-9_]*\.elf" "$WORK/blink/$board.log" | head -1)
+  "$PK/$tc-strip" --strip-debug -o "$OUT/bootloader.elf" "$elf"
+  "$ESPTOOL" --chip "$chip" elf2image --flash-mode dio --flash-freq "$freq" --flash-size "$fsize" \
     -o "$OUT/bootloader.bin" "$OUT/bootloader.elf" > /dev/null
 done
+mkdir -p "$FIX/esp8266"
+cp "$PK/framework-arduinoespressif8266/bootloaders/eboot/eboot.elf" "$FIX/esp8266/eboot.elf"
 
 # .ino → .cpp through PlatformIO's converter (fixed temp path, so the output is stable).
 for case in "$FIX/ino"/*/; do

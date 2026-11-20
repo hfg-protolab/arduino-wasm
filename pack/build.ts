@@ -18,21 +18,25 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { readArchive } from "../src/ar";
+import { scanIncludes } from "../src/ldf";
 import { writeBundle } from "../src/bundle";
 import type { ElfToImageOptions } from "../src/esp-image";
+import type { Esp8266ImageOptions } from "../src/esp8266-image";
 import type { BoardManifest, FileRef, IndexMember, LibraryEntry, LinkIndex, ToolName, ToolRef } from "../src/manifest";
 import { resolve as resolveLink, type ArchiveIndex, type ResolveInput } from "../src/resolve";
 import { elfSymbols, type ObjSymbol } from "../src/symbols";
 import {
     type BoardConfig,
     brotliSize,
+    isPioarduino,
     loadConfig,
     MB,
     nativeTool,
     type PackConfig,
     PKG,
+    PLATFORMS,
     pool,
     readBytes,
     REPO,
@@ -145,7 +149,7 @@ function parseDependencyGraph(log: string): Map<string, GraphNode> {
 /** `-###` of the native driver for one pio command line (run in the project dir). */
 function driverSteps(b: BoardConfig, cmdLine: string, cwd: string): string[][] {
     const argv = shellSplit(cmdLine);
-    const bin = join(PKG, toolchainPackage(b.arch, b.chip), "bin");
+    const bin = join(PKG, toolchainPackage(b), "bin");
     const r = run(join(bin, argv[0]!), ["-###", ...argv.slice(1)], { cwd, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
     const steps = r.stderr.split("\n").filter((l) => l.startsWith(" ")).map((l) => splitDriverLine(l.trim()));
     if (!steps.length) throw new Error(`no -### steps for ${cmdLine.slice(0, 200)}\n${r.stderr}`);
@@ -164,6 +168,7 @@ interface BoardBuild {
 }
 
 const objcopyStrip = (b: BoardConfig, src: string, out: string) => {
+    if (b.keepDebug) return readBytes(src);
     mkdirSync(dirname(out), { recursive: true });
     const r = run(nativeTool(b, "objcopy"), ["--strip-debug", src, out]);
     if (r.code !== 0) throw new Error(`strip ${src}: ${r.stderr}`);
@@ -179,6 +184,76 @@ function walkHeaders(dir: string, out: string[] = [], rel = ""): string[] {
         else if (/\.(h|hh|hpp|hxx|inc|tcc)$/.test(e.name)) out.push(r);
     }
     return out;
+}
+
+/** The board JSON of the board's platform (pioarduino: <core>/platforms/espressif32/boards). */
+function boardJson(b: BoardConfig): any {
+    for (const dir of readdirSync(PLATFORMS)) {
+        const f = join(PLATFORMS, dir, "boards", `${b.board}.json`);
+        if (existsSync(f) && (dir.startsWith(b.arch === "esp8266" ? "espressif8266" : "espressif32"))) return JSON.parse(readFileSync(f, "utf8"));
+    }
+    throw new Error(`[${b.id}] board JSON ${b.board}.json not found under ${PLATFORMS}`);
+}
+
+/** builder/main.py _get_board_flash_mode: opi memory → dout, qio/qout → dio. */
+function appFlashMode(bj: any): string {
+    const mem = bj.build?.arduino?.memory_type ?? "";
+    if (mem === "opi_opi" || mem === "opi_qspi") return "dout";
+    const mode = bj.build?.flash_mode ?? "dio";
+    return mode === "qio" || mode === "qout" ? "dio" : mode;
+}
+
+/** builder/main.py _get_board_f_image → _normalize_frequency: "80000000L" → "80m". */
+function appFlashFreq(bj: any): string {
+    const f = String(bj.build?.f_image ?? bj.build?.f_flash ?? "40000000L");
+    if (/m$/.test(f)) return f;
+    return `${Math.floor(Number(f.replace(/L$/, "")) / 1e6)}m`;
+}
+
+/** pioarduino: the app goes to the ota_0 partition, else 0x10000 (builder/main.py _parse_partitions). */
+export function appOffset(partitions: Uint8Array): number {
+    const dv = new DataView(partitions.buffer, partitions.byteOffset, partitions.byteLength);
+    for (let o = 0; o + 32 <= partitions.length; o += 32) {
+        if (partitions[o] !== 0xaa || partitions[o + 1] !== 0x50) break;
+        if (partitions[o + 2] === 0x00 && partitions[o + 3] === 0x10) return dv.getUint32(o + 4, true);
+    }
+    return 0x10000;
+}
+
+/** Source extensions PlatformIO builds (piobuild.SRC_BUILD_EXT) and scans. */
+const SRC_BUILD_RE = /\.(c|cc|cpp|cxx|c\+\+|S|spp|SPP|sx|s)$/;
+const SCAN_RE = /\.(h|hh|hpp|hxx|inc|tcc|ipp|c|cc|cpp|cxx|c\+\+|S|ino)$/;
+const SKIP_DIRS = new Set(["examples", "example", "test", "tests", "extras", "docs", "doc"]);
+
+/**
+ * What the runtime LDF (src/ldf.ts) needs of a library: every scannable file with its includes
+ * in SCons' order, and the sources of PlatformIO's src_filter (src/ if present, else the root's
+ * files plus utility/ for Arduino libraries, the whole tree for library.json ones).
+ */
+function libraryScan(libPath: string, v: (s: string) => string, order: number): NonNullable<LibraryEntry["scan"]> {
+    const files: Record<string, string[]> = {};
+    const sources: string[] = [];
+    const key = (i: { name: string; quoted: boolean }) => `${i.quoted ? '"' : "<"} ${i.name}`;
+    const walk = (dir: string, rel: string) => {
+        for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+            if (e.name.startsWith(".")) continue;
+            const r = rel ? `${rel}/${e.name}` : e.name;
+            if (e.isDirectory()) {
+                if (!SKIP_DIRS.has(e.name.toLowerCase())) walk(join(dir, e.name), r);
+            } else if (SCAN_RE.test(e.name)) {
+                const incs = scanIncludes(readFileSync(join(dir, e.name), "latin1")).sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+                files[r] = incs.map((i) => (i.quoted ? '"' : "<") + i.name);
+            }
+        }
+    };
+    walk(libPath, "");
+    const hasSrc = existsSync(join(libPath, "src")) && statSync(join(libPath, "src")).isDirectory();
+    const pioLib = existsSync(join(libPath, "library.json")) && !existsSync(join(libPath, "library.properties"));
+    for (const r of Object.keys(files)) {
+        if (!SRC_BUILD_RE.test(r)) continue;
+        if (hasSrc ? r.startsWith("src/") : pioLib || !r.includes("/") || r.startsWith("utility/")) sources.push(r);
+    }
+    return { root: v(libPath), files, sources, order };
 }
 
 async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: { forceProbe: boolean; pch: boolean }): Promise<BoardBuild> {
@@ -201,10 +276,20 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
     const incDirs = mainArgv.filter((a) => a.startsWith("-I")).map((a) => a.slice(2));
     const linkArgv = shellSplit(linkLine);
     const libArchives = linkArgv.filter((a) => new RegExp(`^${esc(bdir)}/lib[0-9a-f]+/lib.+\\.a$`).test(a));
+    // pioarduino sets lib_archive = no: library objects are linked one by one, before the sketch's
+    const libObjects = linkArgv.filter((a) => new RegExp(`^${esc(bdir)}/lib[0-9a-f]+/.+\\.o$`).test(a));
     const libraries: LibraryEntry[] = [];
     const libIncDirsNative = new Set<string>();
     // Order: link order (post-order) for archived libs; header-only libs at the position the
     // include order implies. Built from the include order (reverse post-order) reversed.
+    // GetLibBuilders() order: storage dirs as GetLibSourceDirs lists them (lib_extra_dirs, then the
+    // framework's LIBSOURCE_DIRS), library dirs sorted by name inside each
+    const storageDirs = [join(libsRoot(), "all"), join(libsRoot(), b.arch), join(PKG, frameworkPackage(b.arch), "libraries")];
+    const storageRank = (libPath: string) => {
+        const i = storageDirs.indexOf(dirname(libPath));
+        const names = existsSync(dirname(libPath)) ? readdirSync(dirname(libPath)).sort() : [];
+        return (i < 0 ? storageDirs.length : i) * 100000 + names.indexOf(basename(libPath));
+    };
     const libOfDir = (d: string) => [...graph.values()].find((g) => g.path && (d === g.path || d.startsWith(g.path + "/")));
     const orderedNames: string[] = [];
     for (const d of [...incDirs].reverse()) {
@@ -224,13 +309,20 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
             const data = objcopyStrip(b, join(proj, arPath), join(WORK, "stripped", b.id, arPath));
             archive = { path: arPath, ...store.put(data, "a") };
         }
+        const objRe = new RegExp(`^${esc(bdir)}/lib[0-9a-f]+/${esc(basename(g.path))}/`);
+        const objects = libObjects.filter((o) => objRe.test(o)).map((o) => ({ path: o, ...store.put(objcopyStrip(b, join(proj, o), join(WORK, "stripped", b.id, o)), "o") }));
         const origin = g.path.startsWith(PKG) ? "framework" : "allowed";
-        libraries.push({ name, version: g.version, origin, includeDirs: dirs.map(v), headers, deps: g.deps.filter((d) => graph.has(d) && d !== name), ...(archive ? { archive } : {}) });
+        const scan = libraryScan(g.path, v, storageRank(g.path));
+        libraries.push({ name, version: g.version, origin, includeDirs: dirs.map(v), headers, deps: g.deps.filter((d) => graph.has(d) && d !== name), ...(archive ? { archive } : {}), ...(objects.length ? { objects } : {}), scan });
     }
-    // Sanity: the archive order we derive equals pio's link order.
+    // Sanity: the archive / object order we derive equals pio's link order.
     const derived = libraries.filter((l) => l.archive).map((l) => l.archive!.path);
     if (JSON.stringify(derived) !== JSON.stringify(libArchives)) {
         throw new Error(`[${b.id}] library order mismatch:\n derived ${derived.join(" ")}\n pio     ${libArchives.join(" ")}`);
+    }
+    const derivedObjs = libraries.flatMap((l) => (l.objects ?? []).map((o) => o.path));
+    if (JSON.stringify(derivedObjs) !== JSON.stringify(libObjects)) {
+        throw new Error(`[${b.id}] library object order mismatch:\n derived ${derivedObjs.join(" ")}\n pio     ${libObjects.join(" ")}`);
     }
     void probedLibs;
 
@@ -275,7 +367,16 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
                 continue;
             }
             if (a === "-dumpbase") {
-                out.push(a, "${DUMPBASE}");
+                // GCC ≤ 10: the source's basename; GCC ≥ 11: the object's basename without .o + the source's extension
+                const val = cc[i + 1]!;
+                const base = basename(src);
+                out.push(a, val === base ? "${DUMPBASE}" : val === base + extname(src) ? "${DUMPBASE}" + extname(src) : val);
+                i++;
+                continue;
+            }
+            if (a === "-dumpdir" && cc[i + 1] === dirname(obj) + "/") {
+                // GCC ≥ 11: the object's directory
+                out.push(a, "${OBJDIR}/");
                 i++;
                 continue;
             }
@@ -307,7 +408,8 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
     const collect = linkSteps.find((s) => basename(s[0]!) === "collect2");
     if (!collect) throw new Error(`[${b.id}] no collect2 in -###`);
     const ldNative = run(nativeTool(b, "g++"), ["-print-prog-name=ld"]).stdout.trim();
-    const isSketchObj = (a: string) => new RegExp(`^${esc(bdir)}/src/.+\\.o$`).test(a);
+    // ${OBJS} = library objects (lib_archive = no) + sketch objects, contiguous on pio's link line
+    const isSketchObj = (a: string) => new RegExp(`^${esc(bdir)}/src/.+\\.o$`).test(a) || libObjects.includes(a);
     const isLibArchive = (a: string) => libArchives.includes(a);
     const ldArgv: string[] = [];
     {
@@ -343,6 +445,17 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
             noteDotDot(a);
             ldArgv.push(v(a));
         }
+    }
+    // collect2 without HAVE_LD_DEMANGLE (the GCC 14 / GCC 10 ESP toolchains) runs ld with
+    // COLLECT_NO_DEMANGLE=1 and does not demangle ld's messages itself: native errors read
+    // "undefined reference to `_Z1fi'". The wasm ld gets --no-demangle to say the same.
+    {
+        const probeSrc = join(WORK, "stripped", `${b.id}-demangle.cpp`);
+        mkdirSync(dirname(probeSrc), { recursive: true });
+        writeFileSync(probeSrc, "void f(int);\nint main() { f(1); return 0; }\n");
+        const r = run(nativeTool(b, "g++"), [probeSrc, "-nostdlib", "-o", probeSrc + ".elf"]);
+        if (/undefined reference to `_Z1fi'/.test(r.stderr)) ldArgv.unshift("--no-demangle");
+        else if (!/undefined reference to `f\(int\)'/.test(r.stderr)) throw new Error(`[${b.id}] demangle probe: ${r.stderr}`);
     }
     // Inputs as ld sees them (native resolution, then virtualized).
     const nativeLd = collect.slice(1).filter((a, i, arr) => !(a === "-plugin" || arr[i - 1] === "-plugin" || a.startsWith("-plugin-opt=") || /^-f(no-)?lto/.test(a)));
@@ -390,13 +503,23 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
     const vpath = (p: string) => v(resolvePath(absOf.get(p) ?? (isAbsolute(p) ? p : join(proj, p))));
     for (const inp of plan.inputs) {
         if (inp.kind === "script") {
-            const abs = absOf.get(inp.path) ?? join(proj, inp.path);
-            const text = readFileSync(abs, "utf8");
-            const r = scriptRoots(text);
-            if (r.includes.length || r.inputs.length) throw new Error(`INCLUDE/INPUT in ${inp.path} not handled`);
-            index.roots.push(...r.externs);
-            if (r.entry && !entry) entry = r.entry;
-            addLinkFile(abs, readBytes(abs), "ld");
+            // INCLUDE "x.ld" (ESP8266: eagle.flash.*.ld → the preprocessed local.eagle.app.v6.common.ld
+            // in the build dir) is looked up like a -T script: as given, then in the -L dirs.
+            const addScript = (path: string, depth: number) => {
+                const abs = absOf.get(path) ?? (isAbsolute(path) ? path : join(proj, path));
+                const r = scriptRoots(readFileSync(abs, "utf8"));
+                if (r.inputs.length) throw new Error(`INPUT/GROUP in ${path} not handled`);
+                index.roots.push(...r.externs);
+                if (r.entry && !entry) entry = r.entry;
+                addLinkFile(abs, readBytes(abs), "ld");
+                for (const inc of r.includes) {
+                    const name = inc.replace(/^"|"$/g, "");
+                    const found = resolveFile(name, plan.libDirs, false);
+                    if (!found || depth > 8) throw new Error(`INCLUDE ${name} of ${path} not found`);
+                    addScript(found, depth + 1);
+                }
+            };
+            addScript(inp.path, 0);
         } else if (inp.kind === "object") {
             if (isSketchObj(inp.path)) {
                 if (!objsSeen) index.inputs.push({ kind: "objects" });
@@ -418,7 +541,7 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
             }
             const abs = absOf.get(inp.path)!;
             const strippedPath = join(WORK, "stripped", b.id, "ar", sha256(abs).slice(0, 12), basename(abs));
-            const data = existsSync(strippedPath) && statSync(strippedPath).mtimeMs >= statSync(abs).mtimeMs ? readBytes(strippedPath) : objcopyStrip(b, abs, strippedPath);
+            const data = b.keepDebug ? readBytes(abs) : existsSync(strippedPath) && statSync(strippedPath).mtimeMs >= statSync(abs).mtimeMs ? readBytes(strippedPath) : objcopyStrip(b, abs, strippedPath);
             if (!b.lazyLink) {
                 addLinkFile(abs, data, "a");
                 continue;
@@ -458,7 +581,7 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
     if (entry) index.roots.push(entry);
     // AVR: ld's default linker script lives next to the program: <ld dir>/../lib/ldscripts.
     const ldVirtual = v(resolvePath(ldNative));
-    const toolchainRoot = join(PKG, toolchainPackage(b.arch, b.chip));
+    const toolchainRoot = join(PKG, toolchainPackage(b));
     if (b.arch === "avr") {
         const sdir = join(dirname(resolvePath(ldNative)), "../lib/ldscripts");
         const emu = /-m(avr\w*)/.exec(nativeLd.join(" "))?.[1] ?? "avr5";
@@ -501,32 +624,57 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
         const ocArgv = oc ? shellSplit(oc) : [];
         for (let i = 0; i < ocArgv.length; i++) if (ocArgv[i] === "-R") remove.push(ocArgv[++i]!);
         output = { kind: "hex", remove };
+    } else if (b.arch === "esp8266") {
+        // elf2bin.py --eboot <core>/bootloaders/eboot/eboot.elf --app firmware.elf --flash_mode dio --flash_freq 40 --flash_size 4M
+        const e2b = lines.find((l) => /elf2bin\.py/.test(l) && /firmware\.bin/.test(l));
+        if (!e2b) throw new Error(`[${b.id}] no elf2bin line`);
+        const a = shellSplit(e2b);
+        const opt = (k: string) => a[a.indexOf(k) + 1]!;
+        if (a.includes("--gzip") || a.some((x) => x.startsWith("--sign"))) throw new Error(`[${b.id}] elf2bin options not supported: ${e2b}`);
+        const eboot = store.put(readBytes(opt("--eboot")), "elf");
+        output = {
+            kind: "esp8266-image",
+            image: { flashMode: opt("--flash_mode") as Esp8266ImageOptions["flashMode"], flashFreq: opt("--flash_freq") as Esp8266ImageOptions["flashFreq"], flashSize: opt("--flash_size") },
+            eboot,
+            appAddress: 0x0,
+        };
     } else {
-        const e2i = lines.find((l) => / elf2image /.test(l) && /firmware\.bin/.test(l));
+        let e2i = lines.find((l) => / elf2image /.test(l) && /firmware\.bin/.test(l));
+        const bj = boardJson(b);
+        if (!e2i && isPioarduino(b.platform)) {
+            // The probe app (every library linked) is too big for the partition, so pio stops at
+            // checkprogsize before the image: pioarduino's ElfToBin flags (builder/main.py) instead.
+            e2i = `esptool --chip ${b.chip} elf2image --flash-mode \${x} --flash-freq \${x} --flash-size ${bj.upload?.flash_size ?? "4MB"} --elf-sha256-offset 0xb0 -o firmware.bin firmware.elf`;
+        }
         if (!e2i) throw new Error(`[${b.id}] no elf2image line`);
         const a = shellSplit(e2i);
-        const opt = (k: string) => a[a.indexOf(k) + 1]!;
+        const opt = (k: string) => a[a.indexOf(k) + 1] ?? a[a.indexOf(k.replace(/-/g, "_").replace(/^__/, "--")) + 1]!;
+        const has = (k: string) => a.includes(k) || a.includes(k.replace(/-/g, "_").replace(/^__/, "--"));
+        // pioarduino's verbose action line is not substituted (`${__get_board_flash_mode(__env__)}`, and
+        // SCons crashes printing it): the same rules from the board JSON (builder/main.py).
         const image: ElfToImageOptions = {
             chip: opt("--chip") as ElfToImageOptions["chip"],
-            flashMode: opt("--flash_mode") as ElfToImageOptions["flashMode"],
-            flashFreq: opt("--flash_freq"),
-            flashSize: opt("--flash_size"),
-            ...(a.includes("--elf-sha256-offset") ? { elfSha256Offset: Number(opt("--elf-sha256-offset")) } : {}),
+            flashMode: (/\$\{/.test(opt("--flash-mode")) ? appFlashMode(bj) : opt("--flash-mode")) as ElfToImageOptions["flashMode"],
+            flashFreq: /\$\{/.test(opt("--flash-freq")) ? appFlashFreq(bj) : opt("--flash-freq"),
+            flashSize: opt("--flash-size"),
+            ...(has("--elf-sha256-offset") ? { elfSha256Offset: Number(opt("--elf-sha256-offset")) } : {}),
         };
         const bootAddr = image.chip === "esp32" ? 0x1000 : 0x0;
+        const partitions = readBytes(join(proj, bdir, "partitions.bin"));
         const images = [
             { name: "bootloader.bin", address: bootAddr, ...store.put(readBytes(join(proj, bdir, "bootloader.bin")), "bin") },
-            { name: "partitions.bin", address: 0x8000, ...store.put(readBytes(join(proj, bdir, "partitions.bin")), "bin") },
+            { name: "partitions.bin", address: 0x8000, ...store.put(partitions, "bin") },
             { name: "boot_app0.bin", address: 0xe000, ...store.put(readBytes(join(PKG, frameworkPackage(b.arch), "tools/partitions/boot_app0.bin")), "bin") },
         ];
-        output = { kind: "esp-image", image, appAddress: 0x10000, images };
+        output = { kind: "esp-image", image, appAddress: appOffset(partitions), images };
+        console.log(`[${b.id}] app image ${image.chip} ${image.flashMode} ${image.flashFreq} ${image.flashSize} at 0x${output.appAddress.toString(16)}`);
     }
     const ram = /^RAM:.*used \d+ bytes from (\d+) bytes/m.exec(log);
     const flash = /^Flash:.*used \d+ bytes from (\d+) bytes/m.exec(log);
     if (!ram || !flash) throw new Error(`[${b.id}] no size report in the probe log`);
 
     // ---- header closure
-    const headers = await headerClosure(cfg, b, mainArgv, proj, libraries, incDirs);
+    const headers = await headerClosure(cfg, b, mainArgv, proj, libraries, incDirs, libIncDirsNative);
     const vheaders = new Map<string, string>();
     for (const h of headers) vheaders.set(v(h), h);
 
@@ -548,7 +696,7 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
         libraries,
         link: { ld: ldArgv, files: linkFiles, ...(lazy ? { lazy } : {}) },
         output,
-        size: { family: b.arch === "avr" ? "avr" : "esp32", flashMax: Number(flash[1]), ramMax: Number(ram[1]) },
+        size: { family: b.arch, flashMax: Number(flash[1]), ramMax: Number(ram[1]) },
         stats: {},
     };
     console.log(`[${b.id}] manifest ready in ${((Date.now() - t0) / 1000).toFixed(0)} s: ${libraries.length} libraries, ${headers.length} headers, ${linkFiles.length} link files`);
@@ -577,7 +725,7 @@ function memberSyms(m: IndexMember, strings: string[]): ObjSymbol[] {
 // ------------------------------------------------------------------------------------------
 // Header closure
 
-async function headerClosure(cfg: PackConfig, b: BoardConfig, mainArgv: string[], proj: string, libraries: LibraryEntry[], incDirs: string[]): Promise<string[]> {
+async function headerClosure(cfg: PackConfig, b: BoardConfig, mainArgv: string[], proj: string, libraries: LibraryEntry[], incDirs: string[], libIncDirs: Set<string>): Promise<string[]> {
     const flags: string[] = [];
     for (let i = 1; i < mainArgv.length; i++) {
         const a = mainArgv[i]!;
@@ -588,9 +736,10 @@ async function headerClosure(cfg: PackConfig, b: BoardConfig, mainArgv: string[]
         if (a === "-c" || a === "-MMD" || a === "-MD" || /\.(cpp|c)$/.test(a)) continue;
         flags.push(a);
     }
-    const cxx = join(PKG, toolchainPackage(b.arch, b.chip), "bin", mainArgv[0]!);
+    const cxx = join(PKG, toolchainPackage(b), "bin", mainArgv[0]!);
     const cands = new Set<string>(["Arduino.h", ...cfg.stdHeaders.c.split(/\s+/), ...(b.arch === "avr" ? cfg.stdHeaders.avr.split(/\s+/) : cfg.stdHeaders.cxx.split(/\s+/))]);
-    for (const l of libraries) for (const h of l.headers) cands.add(h);
+    const libHeaders = new Set<string>();
+    for (const l of libraries) for (const h of l.headers) libHeaders.add(h);
     // curated extras; "dir/*.h" globs one level in every include dir
     const sysDirs = (() => {
         const r = run(cxx, [...flags, "-E", "-v", "-x", "c++", "-"], { cwd: proj, input: "" });
@@ -616,8 +765,14 @@ async function headerClosure(cfg: PackConfig, b: BoardConfig, mainArgv: string[]
             for (const f of readdirSync(full)) if (re.test(f)) cands.add(`${dir}/${f}`);
         }
     }
-    const list = [...cands];
-    const results = await pool(list, availableParallelism(), async (h) => {
+    // The probe's line has every library's -I: a header found through a library dir there (the
+    // ESP8266 GDBStub ships xtensa/config/core-isa.h) resolves elsewhere in a sketch without that
+    // library. So the non-library candidates also go through the line without library dirs.
+    const baseFlags = flags.filter((a) => !(a.startsWith("-I") && libIncDirs.has(a.slice(2))));
+    const jobs: Array<{ h: string; flags: string[] }> = [...cands, ...libHeaders].map((h) => ({ h, flags }));
+    for (const h of cands) if (!libHeaders.has(h)) jobs.push({ h, flags: baseFlags });
+    const list = jobs.map((j) => j.h);
+    const results = await pool(jobs, availableParallelism(), async ({ h, flags }) => {
         const r = await runAsync(cxx, [...flags, "-M", "-x", "c++", "-"], { cwd: proj, input: `#include <Arduino.h>\n#include <${h}>\n` });
         if (r.code !== 0) return null;
         return r.stdout
@@ -628,11 +783,13 @@ async function headerClosure(cfg: PackConfig, b: BoardConfig, mainArgv: string[]
             .filter((f) => f && f !== "-");
     });
     const set = new Set<string>();
-    const failed: string[] = [];
+    const ok = new Set<string>();
     results.forEach((r, i) => {
-        if (!r) failed.push(list[i]!);
-        else for (const f of r) set.add(resolvePath(proj, f));
+        if (!r) return;
+        ok.add(list[i]!);
+        for (const f of r) set.add(resolvePath(proj, f));
     });
+    const failed = [...new Set(list)].filter((h) => !ok.has(h));
     if (failed.length) console.log(`[${b.id}] headers not includable on this board (left out): ${failed.length} (${failed.slice(0, 12).join(", ")}${failed.length > 12 ? ", …" : ""})`);
     return [...set].filter((f) => existsSync(f)).sort();
 }
@@ -647,10 +804,15 @@ async function generatePch(store: Store, m: BoardManifest, headerFiles: Map<stri
     const arduinoH = [...headerFiles.keys()].find((p) => p.endsWith("/cores/esp32/Arduino.h") || /\/cores\/[^/]+\/Arduino\.h$/.test(p));
     if (!arduinoH) throw new Error(`[${m.id}] Arduino.h not in the header closure`);
     const args = m.compile.cpp.cc1plus.flatMap((a) => (a === "${LIBINC}" ? [] : [a]));
-    const sub = args.map((a) => a.replace("${SRC}", arduinoH).replace("${DUMPBASE}", "Arduino.h").replace("${OBJ}", "/pch/Arduino.h.gch").replace("${ASM}", "/tmp/pch.s"));
+    // GCC ≥ 11 writes the header path the PCH was made from into the assembly (debug info):
+    // generate it from /pch/Arduino.h, the path the compile's `-include` names.
+    const gccMajor = Number(/\/gcc\/[^/]+\/(\d+)\.\d+\.\d+\/cc1plus$/.exec(m.tools.cc1plus.thisProgram)?.[1] ?? 0);
+    const src = gccMajor >= 11 ? "/pch/Arduino.h" : arduinoH;
+    const sub = args.map((a) => a.replace("${SRC}", src).replace("${DUMPBASE}", "Arduino.h").replace("${OBJDIR}", "/pch").replace("${OBJ}", "/pch/Arduino.h.gch").replace("${ASM}", "/tmp/pch.s"));
     const i = sub.indexOf("-o");
-    sub.splice(i, 2, "-o", "/tmp/pch.s", "--output-pch=/pch/Arduino.h.gch");
+    sub.splice(i, 2, "-o", "/tmp/pch.s", ...(gccMajor >= 11 ? ["--output-pch", "/pch/Arduino.h.gch"] : ["--output-pch=/pch/Arduino.h.gch"]));
     const files = new Map(headerFiles);
+    if (src !== arduinoH) files.set(src, headerFiles.get(arduinoH)!);
     const t = Date.now();
     const r = await runTool(tool, sub, { files, cwd: m.fs.cwd, mkdirs: [...m.fs.mkdirs, "/pch", "/tmp", `${m.fs.cwd}/src`], thisProgram: m.tools.cc1plus.thisProgram, outputs: ["/pch/Arduino.h.gch"] });
     if (r.code !== 0) throw new Error(`[${m.id}] PCH generation failed (${r.code}):\n${r.output}`);
@@ -662,26 +824,47 @@ async function generatePch(store: Store, m: BoardManifest, headerFiles: Map<stri
 // ------------------------------------------------------------------------------------------
 // Licenses / sources
 
-function licenses(cfg: PackConfig, builds: BoardBuild[]) {
+function licenses(cfg: PackConfig, builds: BoardBuild[], kept: BoardManifest[] = []) {
+    const tc = new Set(cfg.boards.map((b) => b.toolchain));
     const pkgs = new Set<string>();
     for (const b of cfg.boards) {
         pkgs.add(frameworkPackage(b.arch));
-        pkgs.add(toolchainPackage(b.arch, b.chip));
+        pkgs.add(toolchainPackage(b));
+        if (b.arch === "esp32" && isPioarduino(b.platform)) pkgs.add("framework-arduinoespressif32-libs");
     }
     const comps: Array<Record<string, string>> = [];
     for (const p of pkgs) {
         const j = JSON.parse(readFileSync(join(PKG, p, "package.json"), "utf8"));
         comps.push({ component: p, version: j.version, license: j.license ?? "see package", role: p.startsWith("toolchain") ? "target libraries (libgcc, libc/newlib, libstdc++, crt, linker scripts, headers)" : "Arduino core / ESP-IDF prebuilt libraries and headers" });
     }
-    if (pkgs.has("framework-arduinoespressif32")) comps.push({ component: "ESP-IDF 4.4.7 (prebuilt in framework-arduinoespressif32)", license: "Apache-2.0", source: "https://github.com/espressif/esp-idf/tree/v4.4.7" });
+    if (pkgs.has("framework-arduinoespressif32")) {
+        const v3 = cfg.boards.some((b) => b.arch === "esp32" && isPioarduino(b.platform));
+        comps.push(v3 ? { component: "ESP-IDF 5.5.4 (prebuilt in framework-arduinoespressif32-libs)", license: "Apache-2.0", source: "https://github.com/espressif/esp-idf/tree/v5.5.4" } : { component: "ESP-IDF 4.4.7 (prebuilt in framework-arduinoespressif32)", license: "Apache-2.0", source: "https://github.com/espressif/esp-idf/tree/v4.4.7" });
+    }
     const libs = new Map<string, LibraryEntry>();
-    for (const b of builds) for (const l of b.manifest.libraries) if (l.origin === "allowed") libs.set(l.name, l);
+    for (const m of [...kept, ...builds.map((b) => b.manifest)]) for (const l of m.libraries) if (l.origin === "allowed") libs.set(l.name, l);
     for (const l of libs.values()) comps.push({ component: `library ${l.name}`, version: l.version ?? "", license: "see library (BSD/MIT)", source: `PlatformIO registry: ${l.name}@${l.version}` });
     comps.push(
         { component: "GCC 7.3.0 + Atmel/Arduino patches (avr cc1, cc1plus as WebAssembly)", license: "GPL-3.0-or-later", source: "https://ftp.gnu.org/gnu/gcc/gcc-7.3.0/gcc-7.3.0.tar.xz + https://github.com/arduino/toolchain-avr/tree/7.3.0-atmel3.6.1-arduino7; build recipe toolchains/avr/" },
         { component: "binutils 2.26 Atmel 3.6.1 (avr as, ld as WebAssembly)", license: "GPL-3.0-or-later", source: "http://downloads.arduino.cc/tools/opensource/Atmel-AVR-GNU-Toolchain/3.6.1/avr-binutils.tar.bz2 + toolchains/avr/binutils-2.26-wasm-fnptr.patch" },
-        { component: "GCC 8.4.0 esp-2021r2-patch4 (xtensa/riscv cc1, cc1plus as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/gcc tag esp-2021r2-patch4 + toolchains/esp/patches/" },
-        { component: "binutils 2.35.1 esp-2021r2-patch4 (as, ld as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/binutils-gdb tag esp-2021r2-patch4-binutils" },
+        ...(tc.has("esp32") || tc.has("esp32s3") || tc.has("esp32c3")
+            ? [
+                  { component: "GCC 8.4.0 esp-2021r2-patch4 (xtensa/riscv cc1, cc1plus as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/gcc tag esp-2021r2-patch4 + toolchains/esp/patches/" },
+                  { component: "binutils 2.35.1 esp-2021r2-patch4 (as, ld as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/binutils-gdb tag esp-2021r2-patch4-binutils" },
+              ]
+            : []),
+        ...(tc.has("esp32-v3") || tc.has("esp32s3-v3") || tc.has("riscv32-v3")
+            ? [
+                  { component: "GCC 14.2.0 esp-14.2.0_20260121 (xtensa/riscv32 cc1, cc1plus as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/gcc tag esp-14.2.0_20260121 + xtensa-overlays dd1cf19 + toolchains/esp14/patches/" },
+                  { component: "binutils 2.43.1 esp-2.43.1_20260121 (as, ld as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/espressif/binutils-gdb tag esp-2.43.1_20260121 + toolchains/esp14/patches/" },
+              ]
+            : []),
+        ...(tc.has("esp8266")
+            ? [
+                  { component: "GCC 10.3.0 + esp-quick-toolchain patches (xtensa-lx106 cc1, cc1plus as WebAssembly)", license: "GPL-3.0-or-later", source: "https://ftp.gnu.org/gnu/gcc/gcc-10.3.0/gcc-10.3.0.tar.xz + https://github.com/earlephilhower/esp-quick-toolchain/tree/e5f9fec6c7fa8399c52015eea27f0836f8cccfe9 + toolchains/esp8266/" },
+                  { component: "binutils 2.32 (xtensa-lx106 as, ld as WebAssembly)", license: "GPL-3.0-or-later", source: "https://github.com/gnutools/binutils-gdb/tree/a9d9a104dde6a749f40ce5c4576a0042a7d52d1f + lx106-hal e4bcc63" },
+              ]
+            : []),
         { component: "GMP / MPFR / MPC", license: "LGPL-3.0-or-later", source: "https://ftp.gnu.org/gnu/" },
     );
     return { note: "Source offer: the exact sources and patches of every GPL component are listed here; the build recipes are in the arduino-wasm repository (toolchains/).", components: comps };
@@ -709,7 +892,7 @@ async function main() {
 
     // Header blobs: per family (arch) the files identical on every board → shared blob; rest per board.
     const manifests: BoardManifest[] = [];
-    for (const arch of ["avr", "esp32"] as const) {
+    for (const arch of ["avr", "esp32", "esp8266"] as const) {
         const fam = builds.filter((x) => x.manifest.arch === arch);
         if (!fam.length) continue;
         const content = new Map<string, Uint8Array>();
@@ -745,13 +928,14 @@ async function main() {
         for (const t of ["cc1plus", "cc1", "as", "ld"] as ToolName[]) add(`tool:${t}`, [m.tools[t].js, m.tools[t].wasm]);
         add("headers", m.headers);
         if (m.pch) add("pch", [m.pch.gch]);
-        add("libraries", m.libraries.flatMap((l) => (l.archive ? [l.archive] : [])));
+        add("libraries", m.libraries.flatMap((l) => [...(l.archive ? [l.archive] : []), ...(l.objects ?? [])]));
         add("linkFiles", m.link.files);
         if (m.link.lazy) {
             add("lazyIndex", [m.link.lazy.index]);
             add("lazyBase", [m.link.lazy.base]);
         }
         if (m.output.kind === "esp-image") add("images", m.output.images);
+        if (m.output.kind === "esp8266-image") add("images", [m.output.eboot]);
         m.stats = st;
         writeFileSync(join(outDir, "boards", `${m.id}.json`), JSON.stringify(m, null, 1));
         const first = ["tool:cc1plus", "tool:as", "tool:ld", "headers", "linkFiles", "lazyIndex", "lazyBase", "images", "pch"].reduce((s, k) => s + (st[k]?.brotli ?? 0), 0);
@@ -762,7 +946,11 @@ async function main() {
     const index = { format: 1, packVersion: cfg.packVersion, boards: { ...prev.boards, ...Object.fromEntries(manifests.map((m) => [m.id, `boards/${m.id}.json`])) }, licenses: "licenses.json" };
     writeFileSync(join(outDir, "index.json"), JSON.stringify(index, null, 1));
     const inPack = cfg.boards.filter((b) => b.id in index.boards);
-    writeFileSync(join(outDir, "licenses.json"), JSON.stringify(licenses({ ...cfg, boards: inPack }, builds), null, 1));
+    // Boards of an earlier run into the same pack dir keep their libraries in licenses.json.
+    const kept = inPack
+        .filter((b) => !builds.some((x) => x.manifest.id === b.id) && existsSync(join(outDir, "boards", `${b.id}.json`)))
+        .map((b) => JSON.parse(readFileSync(join(outDir, "boards", `${b.id}.json`), "utf8")) as BoardManifest);
+    writeFileSync(join(outDir, "licenses.json"), JSON.stringify(licenses({ ...cfg, boards: inPack }, builds, kept), null, 1));
     store.save();
     console.log(`pack written to ${outDir}`);
     void copyFileSync;

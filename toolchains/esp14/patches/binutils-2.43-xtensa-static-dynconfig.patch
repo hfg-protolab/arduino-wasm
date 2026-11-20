@@ -1,0 +1,25 @@
+Xtensa chip configuration compiled in (wasm32 has no dlopen): see
+gcc-14-xtensa-static-dynconfig.patch. as and ld accept --dynconfig= when it names exactly the
+compiled-in chip (XTENSA_STATIC_DYNCONFIG, defined in include/xtensa-config.h by our build).
+
+--- a/bfd/xtensa-dynconfig.c
++++ b/bfd/xtensa-dynconfig.c
+@@ -240,6 +240,18 @@ const void *xtensa_load_config (const char *name ATTRIBUTE_UNUSED,
+       const char *path = strcmp(xtensa_dynconfig_file, "") ? xtensa_dynconfig_file : getenv (CONFIG_ENV_NAME);
+ 
+       init = 1;
++#ifdef XTENSA_STATIC_DYNCONFIG
++      /* wasm build: the chip configuration is compiled in.  Accept --dynconfig= (and
++	 XTENSA_GNU_CONFIG) naming exactly that configuration, as the native driver passes it.  */
++      if (path && strcmp (lbasename (path), XTENSA_STATIC_DYNCONFIG) == 0)
++	path = NULL;
++      else if (path)
++	{
++	  _bfd_error_handler (_("this tool has %s built in, not %s"),
++			      XTENSA_STATIC_DYNCONFIG, path);
++	  abort ();
++	}
++#endif
+       if (path)
+ 	{
+ 	  _bfd_error_handler (_("%s is defined but plugin support is disabled"),

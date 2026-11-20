@@ -47,6 +47,8 @@ export function parseLdArgs(argv: string[], resolveFile: (name: string, dirs: st
             plan.undefined.push(v);
         } else if (a.startsWith("-u") && a.length > 2) plan.undefined.push(a.slice(2));
         else if (a === "--wrap" || a.startsWith("--wrap=")) { [v, i] = take(i, a, "--wrap"); plan.wraps.push(v); }
+        // GNU ld also takes long options with one dash (ESP8266: -Wl,-wrap,system_restart_local)
+        else if (a === "-wrap" || a.startsWith("-wrap=")) { [v, i] = take(i, a, "-wrap"); plan.wraps.push(v); }
         else if (a === "-e" || a.startsWith("--entry")) { [v, i] = a === "-e" ? [argv[i + 1], i + 1] : take(i, a, "--entry"); plan.entry = v; }
         else if (a === "-o") plan.output = argv[++i];
         else if (a === "-T" || a.startsWith("--script")) {

@@ -17,8 +17,11 @@ import { join } from "node:path";
 import { loadConfig, REPO } from "../pack/common.ts";
 import { compileFirmware } from "../src/compile";
 import { elfToEspImage } from "../src/esp-image";
+import { elfToEsp8266Image } from "../src/esp8266-image";
 import type { BoardManifest } from "../src/manifest";
-import { compareWithNative, diffCount, nativeLink } from "./native-link";
+import { ElfFile } from "../src/elf";
+import { classifyImageDiff } from "./corpus/run";
+import { compareWithNative, diffCount, linkObjects, nativeLink } from "./native-link";
 import { diskFetch, PACK_BASE } from "./node-fetch";
 import { referenceBuild, sketchFiles } from "./reference-build";
 
@@ -30,12 +33,21 @@ const CASES: Array<[string, string]> = [
     ["multi", "uno"],
     ["blink", "nano"],
     ["blink", "nano-old"],
+    ["blink", "mega"],
+    ["blink", "leonardo"],
     ["blink", "esp32dev"],
     ["wifi", "esp32dev"],
     ["blink", "esp32-s3"],
     ["wifi", "esp32-s3"],
     ["blink", "esp32-c3"],
     ["wifi", "esp32-c3"],
+    ["blink", "esp32-c6"],
+    ["wifi", "esp32-c6"],
+    ["blink", "nano-esp32"],
+    ["wifi", "nano-esp32"],
+    ["blink", "nodemcu"],
+    ["wifi8266", "nodemcu"],
+    ["blink", "d1-mini"],
 ];
 
 const manifestOf = (board: string): BoardManifest | null => {
@@ -53,7 +65,7 @@ describe.each(CASES)("e2e %s on %s", (sketch, board) => {
             expect(r.ok).toBe(true);
             const elfPath = `${m!.fs.cwd}/${m!.fs.buildDir}/firmware.elf`;
             const elf = r.intermediates!.get(elfPath)!;
-            const objs = [...r.intermediates!.keys()].filter((p) => p.endsWith(".o")).map((p) => p.slice(m!.fs.cwd.length + 1)).sort();
+            const objs = linkObjects(m!, r.intermediates!, r.stats!.libraries);
             // the wasm link's library order (LDF post-order)
             const libs = r.stats!.libraries.map((n) => m!.libraries.find((l) => l.name === n)!).filter((l) => l.archive).map((l) => l.archive!.path);
 
@@ -68,6 +80,11 @@ describe.each(CASES)("e2e %s on %s", (sketch, board) => {
             if (m!.output.kind === "hex") {
                 const hex = new TextDecoder().decode(r.files.find((f) => f.name === "firmware.hex")!.data);
                 expect(hex).toBe(readFileSync(join(ref, "firmware.hex"), "utf8"));
+            } else if (m!.output.kind === "esp8266-image") {
+                const app = r.files.find((f) => f.name === "firmware.bin")!.data;
+                const eboot = new Uint8Array(readFileSync(join(PACK, m!.output.eboot.file)));
+                expect(diffCount(app, elfToEsp8266Image(native.elf, eboot, m!.output.image))).toBe(0);
+                expect(diffCount(app, new Uint8Array(readFileSync(join(ref, "firmware.bin"))))).toBe(0);
             } else {
                 const app = r.files.find((f) => f.name === "firmware.bin")!.data;
                 const nativeApp = await elfToEspImage(native.elf, m!.output.image);
@@ -75,12 +92,11 @@ describe.each(CASES)("e2e %s on %s", (sketch, board) => {
                 expect(diffCount(app, nativeApp, masked0)).toBe(0);
                 const pio = new Uint8Array(readFileSync(join(ref, "firmware.bin")));
                 expect(app.length).toBe(pio.length);
-                // masked: ELF SHA-256 (0xb0..0xd0), checksum byte (before the digest), digest (last 32)
-                const n = app.length;
-                const masked = (i: number) => (i >= 0xb0 && i < 0xd0) || i >= n - 33;
-                const d = diffCount(app, pio, masked);
-                if (d) console.log(`${sketch}.${board}: ${d} bytes differ from pio outside the masked fields (expected: .eh_frame of discarded COMDAT FDEs after --strip-debug)`);
-                expect(d).toBeLessThanOrEqual(32);
+                // masked: ELF SHA-256 (0xb0..0xd0), checksum byte, digest (last 32); differences
+                // inside .eh_frame are the known --strip-debug effect (FDEs of discarded COMDAT copies)
+                const c = classifyImageDiff(app, pio, new ElfFile(elf));
+                if (c.ehFrame) console.log(`${sketch}.${board}: ${c.ehFrame} bytes in .eh_frame differ from pio (known --strip-debug effect)`);
+                expect([...c.other]).toEqual([]);
                 for (const f of ["bootloader.bin", "partitions.bin"]) expect(diffCount(r.files.find((x) => x.name === f)!.data, new Uint8Array(readFileSync(join(ref, f))))).toBe(0);
             }
         },

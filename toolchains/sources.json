@@ -11,59 +11,427 @@
       "build": "docker buildx build --output type=local,dest=.build/toolchains/avr toolchains/avr",
       "target": "avr",
       "matches": "PlatformIO toolchain-atmelavr@1.70300.191015 (atmelavr@5.3.0)",
-      "programs": ["cc1", "cc1plus", "as", "ld"],
-      "recipe": { "url": "https://github.com/arduino/toolchain-avr", "tag": "7.3.0-atmel3.6.1-arduino7", "commit": "368b87a73e3677071fa44f2182c1ea4cc6a90557", "files": ["gcc.build.bash", "binutils.build.bash"] },
+      "programs": [
+        "cc1",
+        "cc1plus",
+        "as",
+        "ld"
+      ],
+      "recipe": {
+        "url": "https://github.com/arduino/toolchain-avr",
+        "tag": "7.3.0-atmel3.6.1-arduino7",
+        "commit": "368b87a73e3677071fa44f2182c1ea4cc6a90557",
+        "files": [
+          "gcc.build.bash",
+          "binutils.build.bash"
+        ]
+      },
       "sources": [
-        { "name": "gcc", "version": "7.3.0", "url": "https://ftp.gnu.org/gnu/gcc/gcc-7.3.0/gcc-7.3.0.tar.xz", "sha256": "832ca6ae04636adbb430e865a1451adf6979ab44ca1c8374f61fba65645ce15c" },
-        { "name": "binutils (Atmel AVR toolchain 3.6.1)", "version": "2.26.20160125", "url": "http://downloads.arduino.cc/tools/opensource/Atmel-AVR-GNU-Toolchain/3.6.1/avr-binutils.tar.bz2", "sha256": "7f2ee50c3867ca13be47aee7925c4c9182b15cb5fe6ace23849ee9005081a340" },
-        { "name": "gmp", "version": "6.1.2", "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.1.2.tar.xz", "sha256": "87b565e89a9a684fe4ebeeddb8399dce2599f9c9049854ca8c0dfbdea0e21912" },
-        { "name": "mpfr", "version": "3.1.6", "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-3.1.6.tar.xz", "sha256": "7a62ac1a04408614fccdc506e4844b10cf0ad2c2b1677097f8f35d3a1344a950" },
-        { "name": "mpc", "version": "1.0.3", "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.0.3.tar.gz", "sha256": "617decc6ea09889fb08ede330917a00b16809b8db88c29c31bfbb49cbf88ecc3" }
+        {
+          "name": "gcc",
+          "version": "7.3.0",
+          "url": "https://ftp.gnu.org/gnu/gcc/gcc-7.3.0/gcc-7.3.0.tar.xz",
+          "sha256": "832ca6ae04636adbb430e865a1451adf6979ab44ca1c8374f61fba65645ce15c"
+        },
+        {
+          "name": "binutils (Atmel AVR toolchain 3.6.1)",
+          "version": "2.26.20160125",
+          "url": "http://downloads.arduino.cc/tools/opensource/Atmel-AVR-GNU-Toolchain/3.6.1/avr-binutils.tar.bz2",
+          "sha256": "7f2ee50c3867ca13be47aee7925c4c9182b15cb5fe6ace23849ee9005081a340"
+        },
+        {
+          "name": "gmp",
+          "version": "6.1.2",
+          "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.1.2.tar.xz",
+          "sha256": "87b565e89a9a684fe4ebeeddb8399dce2599f9c9049854ca8c0dfbdea0e21912"
+        },
+        {
+          "name": "mpfr",
+          "version": "3.1.6",
+          "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-3.1.6.tar.xz",
+          "sha256": "7a62ac1a04408614fccdc506e4844b10cf0ad2c2b1677097f8f35d3a1344a950"
+        },
+        {
+          "name": "mpc",
+          "version": "1.0.3",
+          "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.0.3.tar.gz",
+          "sha256": "617decc6ea09889fb08ede330917a00b16809b8db88c29c31bfbb49cbf88ecc3"
+        }
       ],
       "patches": [
-        { "file": "atmel-patches-gcc.7.3.0-arduino2.patch", "origin": "upstream (Arduino)", "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/avr-gcc-patches/atmel-patches-gcc.7.3.0-arduino2.patch", "sha256": "96782c75dd11e994e1ab9250c41fc5cd81ba65bbcf44383cd9d660d01cc85f97", "appliesTo": "gcc" },
-        { "file": "00-binutils-data_region_length.patch", "origin": "upstream (Arduino)", "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/binutils-patches/00-binutils-data_region_length.patch", "sha256": "d9e9f183bad9e1cfe27f3569163ccd3c39b1784b12978b47a2206eb31e2547e8", "appliesTo": "binutils" },
-        { "file": "toolchains/avr/binutils-2.26-wasm-fnptr.patch", "origin": "ours", "appliesTo": "binutils (gas)", "purpose": "pseudo-op handlers cast to void(*)(int) trap under wasm's typed indirect calls" }
+        {
+          "file": "atmel-patches-gcc.7.3.0-arduino2.patch",
+          "origin": "upstream (Arduino)",
+          "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/avr-gcc-patches/atmel-patches-gcc.7.3.0-arduino2.patch",
+          "sha256": "96782c75dd11e994e1ab9250c41fc5cd81ba65bbcf44383cd9d660d01cc85f97",
+          "appliesTo": "gcc"
+        },
+        {
+          "file": "00-binutils-data_region_length.patch",
+          "origin": "upstream (Arduino)",
+          "url": "https://raw.githubusercontent.com/arduino/toolchain-avr/7.3.0-atmel3.6.1-arduino7/binutils-patches/00-binutils-data_region_length.patch",
+          "sha256": "d9e9f183bad9e1cfe27f3569163ccd3c39b1784b12978b47a2206eb31e2547e8",
+          "appliesTo": "binutils"
+        },
+        {
+          "file": "toolchains/avr/binutils-2.26-wasm-fnptr.patch",
+          "origin": "ours",
+          "appliesTo": "binutils (gas)",
+          "purpose": "pseudo-op handlers cast to void(*)(int) trap under wasm's typed indirect calls"
+        }
       ],
       "configure": {
         "binutils": "--host=i686-pc-linux-gnu --target=avr --disable-nls --disable-werror --disable-shared --disable-plugins --disable-gdb --disable-sim --disable-readline --disable-libdecnumber --without-zlib (ld linked with -sEMULATE_FUNCTION_POINTER_CASTS=1)",
         "gcc": "--host=i686-pc-linux-gnu --target=avr --enable-fixed-point --enable-languages=c,c++ --disable-nls --disable-shared --disable-plugin --disable-lto --disable-libssp --disable-libada --disable-libcc1 --without-isl --with-avrlibc=yes --with-dwarf2 --disable-bootstrap --enable-checking=release --with-gnu-as --with-gnu-ld --with-as=<native avr-as> --with-ld=<native avr-ld>"
       }
     },
-    "esp32": { "chip": "esp32", "target": "xtensa-esp32-elf", "overlay": "xtensa_esp32", "extraConfigure": [],
+    "esp32": {
+      "chip": "esp32",
+      "target": "xtensa-esp32-elf",
+      "overlay": "xtensa_esp32",
+      "extraConfigure": [],
       "matches": "PlatformIO toolchain-xtensa-esp32@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
-      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "8ef14e0409c2011b41e504a30f70d3e35287313a795d1f2462ad2cd0e2052d37" },
-      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32 toolchains/esp" },
-    "esp32s3": { "chip": "esp32s3", "target": "xtensa-esp32s3-elf", "overlay": "xtensa_esp32s3", "extraConfigure": [],
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz",
+        "sha256": "8ef14e0409c2011b41e504a30f70d3e35287313a795d1f2462ad2cd0e2052d37"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32 toolchains/esp"
+    },
+    "esp32s3": {
+      "chip": "esp32s3",
+      "target": "xtensa-esp32s3-elf",
+      "overlay": "xtensa_esp32s3",
+      "extraConfigure": [],
       "matches": "PlatformIO toolchain-xtensa-esp32s3@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
-      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32s3-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "8aa17a6adf01efa5b1628c8ac578063a44d26ae9581d39486b92223a41ef262f" },
-      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32s3 --build-arg CHIP=esp32s3 toolchains/esp" },
-    "esp32c3": { "chip": "esp32c3", "target": "riscv32-esp-elf", "overlay": null, "extraConfigure": ["--with-arch=rv32gc", "--with-abi=ilp32"],
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/xtensa-esp32s3-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz",
+        "sha256": "8aa17a6adf01efa5b1628c8ac578063a44d26ae9581d39486b92223a41ef262f"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32s3 --build-arg CHIP=esp32s3 toolchains/esp"
+    },
+    "esp32c3": {
+      "chip": "esp32c3",
+      "target": "riscv32-esp-elf",
+      "overlay": null,
+      "extraConfigure": [
+        "--with-arch=rv32gc",
+        "--with-abi=ilp32"
+      ],
       "matches": "PlatformIO toolchain-riscv32-esp@8.4.0+2021r2-patch5 (espressif32@7.1.3)",
-      "headersFrom": { "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz", "sha256": "f7d73e5f9e2df3ea6ca8e2c95d6ca6d23d6b38fd101ea5d3012f3cb3cd59f39f" },
-      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32c3 --build-arg CHIP=esp32c3 toolchains/esp" }
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-2021r2-patch5/riscv32-esp-elf-gcc8_4_0-esp-2021r2-patch5-linux-amd64.tar.gz",
+        "sha256": "f7d73e5f9e2df3ea6ca8e2c95d6ca6d23d6b38fd101ea5d3012f3cb3cd59f39f"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32c3 --build-arg CHIP=esp32c3 toolchains/esp"
+    },
+    "esp32-v3": {
+      "chip": "esp32",
+      "target": "xtensa-esp-elf",
+      "overlay": "xtensa_esp32",
+      "staticDynconfig": "xtensa_esp32.so",
+      "extraConfigure": [],
+      "matches": "pioarduino toolchain-xtensa-esp-elf@14.2.0+20260121 (platform-espressif32 55.03.39, Arduino-ESP32 3.3.9), chip esp32",
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121/xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz",
+        "sha256": "da31f36d79d4e99f24e55a90a71e65d5694714f16199960bf7885724b706a48c",
+        "use": "only <target>/include (newlib headers GCC's configure inspects)"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32-v3 toolchains/esp14"
+    },
+    "esp32s3-v3": {
+      "chip": "esp32s3",
+      "target": "xtensa-esp-elf",
+      "overlay": "xtensa_esp32s3",
+      "staticDynconfig": "xtensa_esp32s3.so",
+      "extraConfigure": [],
+      "matches": "pioarduino toolchain-xtensa-esp-elf@14.2.0+20260121 (platform-espressif32 55.03.39, Arduino-ESP32 3.3.9), chip esp32s3",
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121/xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz",
+        "sha256": "da31f36d79d4e99f24e55a90a71e65d5694714f16199960bf7885724b706a48c",
+        "use": "only <target>/include (newlib headers GCC's configure inspects)"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp32s3-v3 --build-arg CHIP=esp32s3 toolchains/esp14"
+    },
+    "riscv32-v3": {
+      "chips": [
+        "esp32c3",
+        "esp32c6"
+      ],
+      "target": "riscv32-esp-elf",
+      "overlay": null,
+      "extraConfigure": [
+        "--with-arch=rv32gc",
+        "--with-abi=ilp32"
+      ],
+      "matches": "pioarduino toolchain-riscv32-esp@14.2.0+20260121 (platform-espressif32 55.03.39, Arduino-ESP32 3.3.9)",
+      "headersFrom": {
+        "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121/riscv32-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.xz",
+        "sha256": "b3fce4b04dd15a9f0ed1c209b5a2f389c04eff92ed85e4cc0ebc275b7d95e95a",
+        "use": "only <target>/include (newlib headers GCC's configure inspects)"
+      },
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/riscv32-v3 --build-arg CHIP=riscv32 toolchains/esp14"
+    },
+    "esp8266": {
+      "target": "xtensa-lx106-elf",
+      "dockerfile": "toolchains/esp8266/Dockerfile",
+      "script": "toolchains/esp8266/build.sh",
+      "build": "docker buildx build --output type=local,dest=.build/toolchains/esp8266 toolchains/esp8266",
+      "matches": "PlatformIO toolchain-xtensa@2.100300.220621 (espressif8266@4.2.1, Arduino ESP8266 3.1.2) = esp-quick-toolchain release 3.1.0-gcc10.3 (x86_64-linux-gnu.xtensa-lx106-elf-e5f9fec.220621)",
+      "programs": [
+        "cc1",
+        "cc1plus",
+        "as",
+        "ld"
+      ],
+      "recipe": {
+        "url": "https://github.com/earlephilhower/esp-quick-toolchain",
+        "commit": "e5f9fec6c7fa8399c52015eea27f0836f8cccfe9",
+        "files": [
+          "Makefile"
+        ],
+        "note": "the GitHub tag 3.1.0-gcc10.3 is the parent 8903880f; the release tarball is named after e5f9fec (one patch differs: gcc-xtensa-0007 result[64] -> [128])"
+      },
+      "sources": [
+        {
+          "name": "gcc",
+          "version": "10.3.0",
+          "url": "https://ftp.gnu.org/gnu/gcc/gcc-10.3.0/gcc-10.3.0.tar.xz",
+          "sha256": "64f404c1a650f27fc33da242e1f2df54952e3963a49e06e73f6940f3223ac344",
+          "note": "release tarball of tag releases/gcc-10.3.0 (f00b5710a30f22efc3171c393e56aeb335c3cd39), which esp-quick-toolchain clones"
+        },
+        {
+          "name": "binutils-gdb",
+          "version": "2.32",
+          "url": "https://github.com/gnutools/binutils-gdb/archive/a9d9a104dde6a749f40ce5c4576a0042a7d52d1f.tar.gz",
+          "tag": "binutils-2_32",
+          "commit": "a9d9a104dde6a749f40ce5c4576a0042a7d52d1f",
+          "sha256": "2c8f4f05070eb3799193203cc7ef491117dfa8b681a695481954b38feabdd934"
+        },
+        {
+          "name": "esp-quick-toolchain (patches)",
+          "url": "https://github.com/earlephilhower/esp-quick-toolchain/archive/e5f9fec6c7fa8399c52015eea27f0836f8cccfe9.tar.gz",
+          "commit": "e5f9fec6c7fa8399c52015eea27f0836f8cccfe9",
+          "sha256": "25cbf94ace3144bf073760b21b16208ba56dccd593ce38cda442133687589f67"
+        },
+        {
+          "name": "lx106-hal (core-isa.h, system.h)",
+          "url": "https://github.com/earlephilhower/lx106-hal/archive/e4bcc63c9c016e4f8848e7e8f512438ca857531d.tar.gz",
+          "commit": "e4bcc63c9c016e4f8848e7e8f512438ca857531d",
+          "sha256": "f61acf7dd0e32c5cab6ce38d3cab10f5fe366454288b74b4ee16182f45b6bc24"
+        },
+        {
+          "name": "gmp",
+          "version": "6.1.0",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.1.0.tar.bz2",
+          "sha256": "498449a994efeba527885c10405993427995d3f86b8768d8cdf8d9dd7c6b73e8"
+        },
+        {
+          "name": "mpfr",
+          "version": "3.1.4",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-3.1.4.tar.bz2",
+          "sha256": "d3103a80cdad2407ed581f3618c4bed04e0c92d1cf771a65ead662cc397f7775"
+        },
+        {
+          "name": "mpc",
+          "version": "1.0.3",
+          "url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.0.3.tar.gz",
+          "sha256": "617decc6ea09889fb08ede330917a00b16809b8db88c29c31bfbb49cbf88ecc3"
+        }
+      ],
+      "patches": [
+        {
+          "files": "esp-quick-toolchain patches/gcc-*.patch then patches/gcc10.3/gcc-*.patch (19 files, glob order)",
+          "origin": "upstream (esp-quick-toolchain)",
+          "appliesTo": "gcc"
+        },
+        {
+          "files": "esp-quick-toolchain patches/bin-001-hal.patch",
+          "origin": "upstream (esp-quick-toolchain)",
+          "appliesTo": "binutils-gdb (gdb/ only, inert)"
+        },
+        {
+          "lx106Config": "include/xtensa-config.h of gcc and binutils := lx106-hal core-isa.h + system.h + XCHAL_HAVE_FP_{DIV,RECIP,SQRT,RSQRT} 0",
+          "origin": "upstream (esp-quick-toolchain Makefile .stage.patch)"
+        },
+        {
+          "file": "toolchains/esp8266/patches/gcc-10-pch-emscripten.patch",
+          "origin": "ours",
+          "appliesTo": "gcc (gcc/config/host-linux.c)",
+          "purpose": "PCH on wasm32 (= gcc-8-pch-emscripten.patch)"
+        }
+      ],
+      "configure": {
+        "binutils": "--host=i686-pc-linux-gnu --target=xtensa-lx106-elf --disable-shared --with-newlib --enable-threads=no --disable-__cxa_atexit --disable-libgomp --disable-libmudflap --disable-nls --disable-multilib --disable-bootstrap --enable-languages=c,c++ --enable-static=yes --disable-libstdcxx-verbose --disable-werror --disable-plugins --disable-gdb --disable-sim --disable-readline --disable-libdecnumber --disable-gprof --without-zlib",
+        "gcc": "--host=i686-pc-linux-gnu --target=xtensa-lx106-elf --disable-shared --with-newlib --enable-threads=no --disable-__cxa_atexit --disable-libgomp --disable-libmudflap --disable-nls --disable-multilib --disable-bootstrap --enable-languages=c,c++ --enable-static=yes --disable-libstdcxx-verbose --without-isl --disable-lto --disable-plugin --enable-checking=release --with-as=<native as> --with-ld=<native ld>",
+        "deviationsFromNative": "--disable-lto --disable-plugin --without-isl; prefix; host"
+      }
+    }
   },
   "esp": {
     "$comment": "Shared by esp32, esp32s3, esp32c3 (toolchains/esp, CHIP build arg).",
     "dockerfile": "toolchains/esp/Dockerfile",
     "script": "toolchains/esp/build.sh",
-    "programs": ["cc1", "cc1plus", "as", "ld"],
-    "recipe": { "url": "https://github.com/espressif/crosstool-NG", "tag": "esp-2021r2-patch5", "commit": "7dbd58403d012a07ee046836f625985396cfc1ca", "files": ["samples/xtensa-esp32-elf/crosstool.config", "samples/xtensa-esp32s3-elf/crosstool.config", "samples/riscv32-esp-elf/crosstool.config"] },
+    "programs": [
+      "cc1",
+      "cc1plus",
+      "as",
+      "ld"
+    ],
+    "recipe": {
+      "url": "https://github.com/espressif/crosstool-NG",
+      "tag": "esp-2021r2-patch5",
+      "commit": "7dbd58403d012a07ee046836f625985396cfc1ca",
+      "files": [
+        "samples/xtensa-esp32-elf/crosstool.config",
+        "samples/xtensa-esp32s3-elf/crosstool.config",
+        "samples/riscv32-esp-elf/crosstool.config"
+      ]
+    },
     "sources": [
-      { "name": "gcc (Espressif fork)", "version": "8.4.0", "url": "https://github.com/espressif/gcc/archive/refs/tags/esp-2021r2-patch4.tar.gz", "tag": "esp-2021r2-patch4", "commit": "3b3d328ad0dfd53636d2d54e98b77bfcdacefac4", "sha256": "6baba8db4731a91d825e9b1f44f2a9128c6dae51074ef7b9d5318174c27fec1f" },
-      { "name": "binutils (Espressif fork)", "version": "2.35.1", "url": "https://github.com/espressif/binutils-gdb/archive/refs/tags/esp-2021r2-patch4-binutils.tar.gz", "tag": "esp-2021r2-patch4-binutils", "commit": "df444b49d425e05f538d7875f8e2162771c74a51", "sha256": "542a3c96f3f2dc692815ba47b60f02dc55544e69f94267112f9ded53c94242be" },
-      { "name": "xtensa-overlays", "url": "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz", "commit": "dd1cf19f6eb327a9db51043439974a6de13f5c7f", "sha256": "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56" },
-      { "name": "gmp", "version": "6.2.1", "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz", "sha256": "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2" },
-      { "name": "mpfr", "version": "4.1.0", "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-4.1.0.tar.xz", "sha256": "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f" },
-      { "name": "mpc", "version": "1.2.1", "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.2.1.tar.gz", "sha256": "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459" }
+      {
+        "name": "gcc (Espressif fork)",
+        "version": "8.4.0",
+        "url": "https://github.com/espressif/gcc/archive/refs/tags/esp-2021r2-patch4.tar.gz",
+        "tag": "esp-2021r2-patch4",
+        "commit": "3b3d328ad0dfd53636d2d54e98b77bfcdacefac4",
+        "sha256": "6baba8db4731a91d825e9b1f44f2a9128c6dae51074ef7b9d5318174c27fec1f"
+      },
+      {
+        "name": "binutils (Espressif fork)",
+        "version": "2.35.1",
+        "url": "https://github.com/espressif/binutils-gdb/archive/refs/tags/esp-2021r2-patch4-binutils.tar.gz",
+        "tag": "esp-2021r2-patch4-binutils",
+        "commit": "df444b49d425e05f538d7875f8e2162771c74a51",
+        "sha256": "542a3c96f3f2dc692815ba47b60f02dc55544e69f94267112f9ded53c94242be"
+      },
+      {
+        "name": "xtensa-overlays",
+        "url": "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz",
+        "commit": "dd1cf19f6eb327a9db51043439974a6de13f5c7f",
+        "sha256": "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56"
+      },
+      {
+        "name": "gmp",
+        "version": "6.2.1",
+        "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz",
+        "sha256": "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2"
+      },
+      {
+        "name": "mpfr",
+        "version": "4.1.0",
+        "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-4.1.0.tar.xz",
+        "sha256": "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f"
+      },
+      {
+        "name": "mpc",
+        "version": "1.2.1",
+        "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.2.1.tar.gz",
+        "sha256": "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
+      }
     ],
     "patches": [
-      { "file": "toolchains/esp/patches/gcc-8-pch-emscripten.patch", "origin": "ours", "appliesTo": "gcc (gcc/config/host-linux.c)", "purpose": "PCH on wasm32: fixed arena reserved at startup instead of mmap at a chosen address" }
+      {
+        "file": "toolchains/esp/patches/gcc-8-pch-emscripten.patch",
+        "origin": "ours",
+        "appliesTo": "gcc (gcc/config/host-linux.c)",
+        "purpose": "PCH on wasm32: fixed arena reserved at startup instead of mmap at a chosen address"
+      }
     ],
     "configure": {
       "binutils": "--host=i686-pc-linux-gnu --target=<target> --disable-nls --disable-werror --disable-shared --disable-plugins --disable-gdb --disable-sim --disable-gprof --disable-readline --disable-libdecnumber --without-zlib --with-pkgversion='crosstool-NG esp-2021r2-patch5'",
       "gcc": "--host=i686-pc-linux-gnu --target=<target> --with-local-prefix=<prefix>/<target> --with-headers=<prefix>/<target>/include --with-newlib --enable-threads=no --disable-shared <extraConfigure> --with-pkgversion='crosstool-NG esp-2021r2-patch5' --disable-__cxa_atexit --enable-cxx-flags=-ffunction-sections --disable-libgomp --disable-libmudflap --disable-libmpx --disable-libssp --disable-libquadmath --disable-libquadmath-support --disable-libstdcxx-verbose --without-isl --disable-lto --disable-plugin --enable-target-optspace --without-long-double-128 --disable-nls --enable-multiarch --enable-languages=c,c++ --enable-threads=posix --enable-gcov-custom-rtio --enable-libstdcxx-time=yes --disable-bootstrap --enable-checking=release --with-as=<native target as> --with-ld=<native target ld>",
       "deviationsFromNative": "--disable-lto --disable-plugin --without-isl (native: --enable-lto --with-isl); prefix; host. None changes generated code (verified byte-identical)."
+    }
+  },
+  "esp14": {
+    "$comment": "Shared by esp32-v3, esp32s3-v3, riscv32-v3 (toolchains/esp14, CHIP build arg: esp32 | esp32s3 | riscv32).",
+    "dockerfile": "toolchains/esp14/Dockerfile",
+    "script": "toolchains/esp14/build.sh",
+    "programs": [
+      "cc1",
+      "cc1plus",
+      "as",
+      "ld"
+    ],
+    "recipe": {
+      "url": "https://github.com/espressif/crosstool-NG",
+      "tag": "esp-14.2.0_20260121",
+      "commit": "83e0002aad6dff93c69707a7b85c8d152f1b17c9",
+      "files": [
+        "samples/xtensa-esp-elf/crosstool.config",
+        "samples/riscv32-esp-elf/crosstool.config"
+      ],
+      "submodules": {
+        "overlays": "dd1cf19f6eb327a9db51043439974a6de13f5c7f",
+        "xtensa-dynconfig": "c545876fb73c0ada60cb6413c61554f5b93d4e8a (builds the native xtensa_<chip>.so; not used here)"
+      }
+    },
+    "sources": [
+      {
+        "name": "gcc (Espressif fork)",
+        "version": "14.2.0",
+        "url": "https://github.com/espressif/gcc/archive/refs/tags/esp-14.2.0_20260121.tar.gz",
+        "tag": "esp-14.2.0_20260121",
+        "commit": "31cc3830ae24a75e7da1628bdfb07e766fd3ebd1",
+        "sha256": "a1047d04f01cc21e6fe372d2e82092dab8bb89516e071ab2abae7a7f7202edd7"
+      },
+      {
+        "name": "binutils (Espressif fork)",
+        "version": "2.43.1",
+        "url": "https://github.com/espressif/binutils-gdb/archive/refs/tags/esp-2.43.1_20260121.tar.gz",
+        "tag": "esp-2.43.1_20260121",
+        "commit": "0022556a8e1a345ce5a2138076d03b1500ed8896",
+        "sha256": "a2ecd29ce6f80ab36981883b3106279984cda6767caa636bf487cf5e64c04758"
+      },
+      {
+        "name": "xtensa-overlays",
+        "url": "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz",
+        "commit": "dd1cf19f6eb327a9db51043439974a6de13f5c7f",
+        "sha256": "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56"
+      },
+      {
+        "name": "gmp",
+        "version": "6.3.0",
+        "url": "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
+        "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+      },
+      {
+        "name": "mpfr",
+        "version": "4.2.1",
+        "url": "https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.1.tar.xz",
+        "sha256": "277807353a6726978996945af13e52829e3abd7a9a5b7fb2793894e18f1fcbb2"
+      },
+      {
+        "name": "mpc",
+        "version": "1.3.1",
+        "url": "https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz",
+        "sha256": "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
+      }
+    ],
+    "patches": [
+      {
+        "file": "toolchains/esp14/patches/gcc-14-pch-emscripten.patch",
+        "origin": "ours",
+        "appliesTo": "gcc (gcc/config/host-linux.cc)",
+        "purpose": "PCH on wasm32: allocate and let GCC (>= 12) relocate instead of mmap at a fixed address"
+      },
+      {
+        "file": "toolchains/esp14/patches/gcc-14-xtensa-static-dynconfig.patch",
+        "origin": "ours",
+        "appliesTo": "gcc (gcc/config/xtensa/xtensa-dynconfig.cc)",
+        "purpose": "chip config compiled in; accept -mdynconfig= naming exactly that chip; predefined __XCHAL_* as the native .so"
+      },
+      {
+        "file": "toolchains/esp14/patches/binutils-2.43-xtensa-static-dynconfig.patch",
+        "origin": "ours",
+        "appliesTo": "binutils (bfd/xtensa-dynconfig.c)",
+        "purpose": "chip config compiled in; accept --dynconfig= naming exactly that chip"
+      }
+    ],
+    "configure": {
+      "binutils": "--host=i686-pc-linux-gnu --target=<target> --prefix=<prefix> --with-sysroot=<prefix>/<target> --disable-werror --enable-multilib --disable-nls --disable-sim --disable-gdb --disable-gdbserver --disable-gprof --disable-gprofng --disable-readline --disable-libdecnumber --with-pkgversion='crosstool-NG esp-14.2.0_20260121' --disable-shared --disable-plugins --without-zlib --without-zstd",
+      "gcc": "--host=i686-pc-linux-gnu --target=<target> --prefix=<prefix> --exec_prefix=<prefix> --with-local-prefix=<prefix>/<target> --with-sysroot=<prefix>/<target> --with-native-system-header-dir=/include --with-headers=<prefix>/<target>/include --with-newlib --enable-threads=no --disable-shared <extraConfigure> --with-pkgversion='crosstool-NG esp-14.2.0_20260121' --disable-__cxa_atexit --enable-cxx-flags='-ffunction-sections -fdata-sections' --disable-libgomp --disable-libmudflap --disable-libmpx --disable-libssp --disable-libquadmath --disable-libquadmath-support --disable-libstdcxx-verbose --without-isl --without-zstd --disable-lto --enable-target-optspace --without-long-double-128 --disable-plugin --disable-nls --enable-multiarch --enable-languages=c,c++ --enable-threads=posix --enable-libstdcxx-time=yes --disable-bootstrap --enable-checking=release --with-as=<native target as> --with-ld=<native target ld>",
+      "deviationsFromNative": "--disable-lto --without-isl --without-zstd (native: --enable-lto, isl, zstd); xtensa: --disable-plugin (native: --enable-plugin, needed for dynconfig); prefix; host. Verified byte-identical."
     }
   }
 }
