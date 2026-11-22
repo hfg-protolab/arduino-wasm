@@ -257,3 +257,49 @@ export async function sha256Hex(parts: Array<string | Uint8Array>): Promise<stri
     const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
     return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+export const OBJECT_CACHE_NAME = "arduino-wasm-objects-v1";
+
+/**
+ * Objects of registry libraries, kept across sessions in Cache Storage (where available) on top
+ * of the in-memory LRU. Keys are content hashes (pack version, board, argv, library sha256s).
+ */
+export class PersistentObjectCache {
+    private useCaches: boolean;
+    constructor(
+        readonly memory: ObjectCache,
+        opts: { cacheStorage?: boolean } = {},
+    ) {
+        this.useCaches = (opts.cacheStorage ?? true) && typeof caches !== "undefined";
+    }
+    private url = (key: string) => `https://arduino-wasm.invalid/obj/${key}`;
+    async get(key: string): Promise<Uint8Array | undefined> {
+        const hit = this.memory.get(key);
+        if (hit || !this.useCaches) return hit;
+        try {
+            const c = await caches.open(OBJECT_CACHE_NAME);
+            const r = await c.match(this.url(key));
+            if (!r) return undefined;
+            const data = new Uint8Array(await r.arrayBuffer());
+            this.memory.set(key, data);
+            return data;
+        } catch {
+            return undefined;
+        }
+    }
+    async set(key: string, data: Uint8Array): Promise<void> {
+        this.memory.set(key, data);
+        if (!this.useCaches) return;
+        try {
+            const c = await caches.open(OBJECT_CACHE_NAME);
+            await c.put(this.url(key), new Response(data as BodyInit, { headers: { "content-type": "application/octet-stream" } }));
+        } catch {
+            /* best effort (quota) */
+        }
+    }
+}
+
+export async function sha1Hex(text: string): Promise<string> {
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text)));
+    return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+}

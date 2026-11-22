@@ -24,7 +24,7 @@ import { scanIncludes } from "../src/ldf";
 import { writeBundle } from "../src/bundle";
 import type { ElfToImageOptions } from "../src/esp-image";
 import type { Esp8266ImageOptions } from "../src/esp8266-image";
-import type { BoardManifest, FileRef, IndexMember, LibraryEntry, LinkIndex, ToolName, ToolRef } from "../src/manifest";
+import type { BoardManifest, FileRef, HeaderIndex, IndexMember, LibraryEntry, LinkIndex, ToolName, ToolRef } from "../src/manifest";
 import { resolve as resolveLink, type ArchiveIndex, type ResolveInput } from "../src/resolve";
 import { elfSymbols, type ObjSymbol } from "../src/symbols";
 import {
@@ -37,6 +37,8 @@ import {
     type PackConfig,
     PKG,
     PLATFORMS,
+    pioEnv,
+    PIO,
     pool,
     readBytes,
     REPO,
@@ -313,7 +315,8 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
         const objects = libObjects.filter((o) => objRe.test(o)).map((o) => ({ path: o, ...store.put(objcopyStrip(b, join(proj, o), join(WORK, "stripped", b.id, o)), "o") }));
         const origin = g.path.startsWith(PKG) ? "framework" : "allowed";
         const scan = libraryScan(g.path, v, storageRank(g.path));
-        libraries.push({ name, version: g.version, origin, includeDirs: dirs.map(v), headers, deps: g.deps.filter((d) => graph.has(d) && d !== name), ...(archive ? { archive } : {}), ...(objects.length ? { objects } : {}), scan });
+        const owner = pioOwner(g.path);
+        libraries.push({ name, version: g.version, ...(owner ? { owner } : {}), origin, includeDirs: dirs.map(v), headers, deps: g.deps.filter((d) => graph.has(d) && d !== name), ...(archive ? { archive } : {}), ...(objects.length ? { objects } : {}), scan });
     }
     // Sanity: the archive / object order we derive equals pio's link order.
     const derived = libraries.filter((l) => l.archive).map((l) => l.archive!.path);
@@ -675,6 +678,9 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
 
     // ---- header closure
     const headers = await headerClosure(cfg, b, mainArgv, proj, libraries, incDirs, libIncDirsNative);
+    // ---- registry libraries: assembler templates, every framework header, builtin names
+    const compileAsm = asmTemplates(cfg, b, proj, bdir, v, tmpl);
+    const headerIndex = buildHeaderIndex(b, store, mainArgv, proj, libIncDirsNative, v);
     const vheaders = new Map<string, string>();
     for (const h of headers) vheaders.set(v(h), h);
 
@@ -693,6 +699,18 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
         tools,
         fs: { cwd: cfg.virtualRoots.project, srcDir: `${cfg.virtualRoots.project}/src`, buildDir: bdir, mkdirs: [...mkdirs].map(v).sort() },
         compile: { cpp: { cc1plus: cpp.cc, as: cpp.as }, c: { cc1: c.cc, as: c.as } },
+        ...(compileAsm ? { compileAsm } : {}),
+        registry: {
+            platform: b.arch === "avr" ? "atmelavr" : b.arch === "esp8266" ? "espressif8266" : "espressif32",
+            framework: b.framework,
+            // PlatformIO archives libraries (lib_archive = yes) except on pioarduino; a framework
+            // library may still link objects (its own library.json libArchive: false)
+            libArchive: !isPioarduino(b.platform),
+            builtinNames: builtinLibNames(),
+            libdepsDir: `.pio/libdeps/${env}`,
+        },
+        headerIndex,
+        sourceDateEpoch: Number(pioEnv(cfg).SOURCE_DATE_EPOCH),
         libraries,
         link: { ld: ldArgv, files: linkFiles, ...(lazy ? { lazy } : {}) },
         output,
@@ -701,6 +719,150 @@ async function buildBoard(cfg: PackConfig, b: BoardConfig, store: Store, opts: {
     };
     console.log(`[${b.id}] manifest ready in ${((Date.now() - t0) / 1000).toFixed(0)} s: ${libraries.length} libraries, ${headers.length} headers, ${linkFiles.length} link files`);
     return { manifest, headers: vheaders };
+}
+
+/** Owner of a library installed by `pio pkg install` (its `.piopm`). */
+function pioOwner(libPath: string): string | undefined {
+    const f = join(libPath, ".piopm");
+    if (!existsSync(f)) return undefined;
+    try {
+        return JSON.parse(readFileSync(f, "utf8"))?.spec?.owner ?? undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+let builtinCache: string[] | null = null;
+/**
+ * PlatformIO's `LibraryPackageManager.is_builtin_lib`: the names (manifest `name`, else the
+ * directory) of every library of every installed platform's framework packages. An owner-less
+ * dependency with such a name is never installed from the registry.
+ */
+function builtinLibNames(): string[] {
+    if (builtinCache) return builtinCache;
+    const names = new Set<string>();
+    for (const arch of ["avr", "esp32", "esp8266"]) {
+        const root = join(PKG, frameworkPackage(arch), "libraries");
+        if (!existsSync(root)) continue;
+        for (const d of readdirSync(root).sort()) {
+            const dir = join(root, d);
+            if (d === "__cores__" || !statSync(dir).isDirectory()) continue;
+            let name: string | undefined;
+            if (existsSync(join(dir, "library.json"))) {
+                try {
+                    name = JSON.parse(readFileSync(join(dir, "library.json"), "utf8")).name;
+                } catch {
+                    /* broken manifest */
+                }
+            } else if (existsSync(join(dir, "library.properties"))) {
+                name = /^\s*name\s*=\s*(.+?)\s*$/m.exec(readFileSync(join(dir, "library.properties"), "latin1"))?.[1];
+            }
+            names.add(name ?? d);
+        }
+    }
+    return (builtinCache = [...names].sort());
+}
+
+/**
+ * The compile lines PlatformIO uses for assembler sources (`.S` preprocessed, `.s` plain): one
+ * incremental `pio run -v` of the probe project with two assembler files added, then `-###` of
+ * those lines, templated like the C/C++ lines.
+ */
+function asmTemplates(cfg: PackConfig, b: BoardConfig, proj: string, bdir: string, v: (s: string) => string, tmpl: (steps: string[][], src: string, obj: string, ccName: string) => { cc: string[]; as: string[] }): BoardManifest["compileAsm"] {
+    const logPath = join(WORK, "probe", `${b.id}.asm.log`);
+    let log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+    const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+    const findLine = (name: string) => log.split("\n").find((l) => new RegExp(` -o ${esc(bdir)}/src/${esc(name)}\\.o `).test(l) || new RegExp(` -o ${esc(bdir)}/src/${esc(name)}\\.o$`).test(l));
+    // one file per run: SCons stops at the first failing one (pioarduino's own .s line does not assemble)
+    for (const [name, body] of [["probe_asm_pp.S", "#define PROBE_ASM 1\n"], ["probe_asm.s", "\n"]] as const) {
+        if (findLine(name)) continue;
+        writeFileSync(join(proj, "src", name), body);
+        try {
+            const r = run(PIO, ["run", "-v", "-e", b.id], { cwd: proj, env: pioEnv(cfg) });
+            log += `\n${r.stdout}${r.stderr}`;
+            writeFileSync(logPath, log);
+        } finally {
+            rmSync(join(proj, "src", name), { force: true });
+        }
+    }
+    const lineS = findLine("probe_asm_pp.S");
+    const lines = findLine("probe_asm.s");
+    if (!lineS || !lines) {
+        console.log(`[${b.id}] no assembler compile lines in the probe: .S/.s library sources unsupported`);
+        return undefined;
+    }
+    writeFileSync(join(proj, "src/probe_asm_pp.S"), "");
+    writeFileSync(join(proj, "src/probe_asm.s"), "");
+    try {
+        const S = tmpl(driverSteps(b, lineS, proj), "src/probe_asm_pp.S", `${bdir}/src/probe_asm_pp.S.o`, "cc1");
+        // pio assembles .s with $AS itself (avr-as, xtensa-…-as) or through the gcc driver
+        const direct = shellSplit(lines);
+        const sSteps = /(^|-)as$/.test(basename(direct[0]!)) ? [direct] : driverSteps(b, lines, proj);
+        const as = sSteps.find((st) => /(^|-)as$/.test(basename(st[0]!)));
+        if (!as || sSteps.length !== 1) throw new Error(`[${b.id}] .s: expected one as step, got ${sSteps.map((st) => basename(st[0]!)).join(",")}`);
+        const sAs: string[] = [];
+        for (let i = 1; i < as.length; i++) {
+            const a = as[i]!;
+            if (a === "-o") {
+                sAs.push("-o", "${OBJ}");
+                i++;
+            } else if (a === "src/probe_asm.s") sAs.push("${SRC}");
+            else sAs.push(v(a));
+        }
+        return { S: { cc1: S.cc, as: S.as }, s: { as: sAs } };
+    } finally {
+        rmSync(join(proj, "src/probe_asm_pp.S"), { force: true });
+        rmSync(join(proj, "src/probe_asm.s"), { force: true });
+    }
+}
+
+const HEADER_FILE_RE = /\.(h|hh|hpp|hxx|h\+\+|inc|inl|ipp|tcc|def|tbl)$/i;
+/**
+ * `headerIndex`: every header below the framework's include roots (the sketch line's `-I` dirs
+ * that are not libraries, then the compiler's own system dirs), extensionless files too (C++
+ * standard headers), each stored once as a content-addressed file.
+ */
+function buildHeaderIndex(b: BoardConfig, store: Store, mainArgv: string[], proj: string, libIncDirs: Set<string>, v: (s: string) => string): FileRef {
+    const flags: string[] = [];
+    for (let i = 1; i < mainArgv.length; i++) {
+        const a = mainArgv[i]!;
+        if (a === "-o") {
+            i++;
+            continue;
+        }
+        if (a === "-c" || a === "-MMD" || a === "-MD" || /\.(cpp|c)$/.test(a)) continue;
+        flags.push(a);
+    }
+    const cxx = join(PKG, toolchainPackage(b), "bin", mainArgv[0]!);
+    const sysDirs = run(cxx, [...flags, "-E", "-v", "-x", "c++", "-"], { cwd: proj, input: "" }).stderr.split("\n").filter((l) => l.startsWith(" /")).map((l) => resolvePath(l.trim()));
+    const incDirs = mainArgv.filter((a) => a.startsWith("-I") && a !== "-Isrc" && !libIncDirs.has(a.slice(2))).map((a) => resolvePath(proj, a.slice(2)));
+    const dirs = [...new Set([...incDirs, ...sysDirs])].filter((d) => existsSync(d) && statSync(d).isDirectory());
+    const index: HeaderIndex = { dirs: dirs.map((d) => v(d)), files: [] };
+    let bytes = 0;
+    const seen = new Set<string>();
+    dirs.forEach((d, di) => {
+        const walk = (dir: string, rel: string) => {
+            for (const e of readdirSync(dir, { withFileTypes: true }).sort((x, y) => (x.name < y.name ? -1 : 1))) {
+                if (e.name.startsWith(".")) continue;
+                const r = rel ? `${rel}/${e.name}` : e.name;
+                const full = join(dir, e.name);
+                if (e.isDirectory()) walk(full, r);
+                else if (e.isFile() && (HEADER_FILE_RE.test(e.name) || !e.name.includes("."))) {
+                    const st = statSync(full);
+                    if (st.size > 4_000_000) continue;
+                    const data = readBytes(full);
+                    if (!HEADER_FILE_RE.test(e.name) && data.subarray(0, 4).every((c) => c === 0x7f || c < 9)) continue;
+                    const ref = store.put(data, "h");
+                    index.files.push([di, r, ref.sha256.slice(0, 32), ref.size]);
+                    if (!seen.has(ref.sha256)) bytes += ref.size;
+                    seen.add(ref.sha256);
+                }
+            }
+        };
+        walk(d, "");
+    });
+    console.log(`[${b.id}] header index: ${index.dirs.length} dirs, ${index.files.length} files, ${seen.size} unique, ${MB(bytes)} MB raw`);
+    return store.put(new TextEncoder().encode(JSON.stringify(index)), "json");
 }
 
 function safeSyms(data: Uint8Array): ObjSymbol[] {
@@ -928,6 +1090,7 @@ async function main() {
         for (const t of ["cc1plus", "cc1", "as", "ld"] as ToolName[]) add(`tool:${t}`, [m.tools[t].js, m.tools[t].wasm]);
         add("headers", m.headers);
         if (m.pch) add("pch", [m.pch.gch]);
+        if (m.headerIndex) add("headerIndex", [m.headerIndex]);
         add("libraries", m.libraries.flatMap((l) => [...(l.archive ? [l.archive] : []), ...(l.objects ?? [])]));
         add("linkFiles", m.link.files);
         if (m.link.lazy) {

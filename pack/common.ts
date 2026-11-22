@@ -35,6 +35,11 @@ export interface BoardConfig {
 
 export interface PackConfig {
     packVersion: string;
+    /**
+     * The date behind SOURCE_DATE_EPOCH of every native build (default: the pack version's):
+     * kept when a pack version reuses the cached probe builds, whose core it ships.
+     */
+    sourceDate?: string;
     virtualRoots: { packages: string; libs: string; project: string };
     boards: BoardConfig[];
     libraries: Array<{ dir: string; spec: string }>;
@@ -52,8 +57,8 @@ export function loadConfig(path = join(REPO, "pack/config.json")): PackConfig {
  * (`__DATE__`/`__TIME__`, chip-debug-report.cpp); the pack ships that core precompiled, so the
  * reference builds must expand those macros to the same instant (GCC honours SOURCE_DATE_EPOCH).
  */
-export function pioEnv(cfg: Pick<PackConfig, "packVersion">): NodeJS.ProcessEnv {
-    const m = /^(\d{4})\.(\d{2})\.(\d{2})/.exec(cfg.packVersion);
+export function pioEnv(cfg: Pick<PackConfig, "packVersion" | "sourceDate">): NodeJS.ProcessEnv {
+    const m = /^(\d{4})\.(\d{2})\.(\d{2})/.exec(cfg.sourceDate ?? cfg.packVersion);
     const epoch = m ? Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!) / 1000 : 0;
     return { ...process.env, SOURCE_DATE_EPOCH: String(epoch) };
 }

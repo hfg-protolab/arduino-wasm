@@ -17,6 +17,9 @@
  * `selectLibraries` returns both orders.
  */
 import type { LibraryEntry } from "./manifest";
+import { isCompatible } from "./registry/manifest";
+import { castVersion, isValidSpec, SimpleSpec } from "./registry/semver";
+import { parseLibSpec, type LibSpec } from "./registry/spec";
 import type { SourceFile } from "./types";
 
 export interface LdfResult {
@@ -26,6 +29,8 @@ export interface LdfResult {
     includeArgs: string[];
     /** Includes that matched neither a project file nor a library (resolved by the compiler, or an error). */
     unresolved: string[];
+    /** `-I` arguments of each selected library's own compile line (PlatformIO's library CPPPATH). */
+    libIncludeArgs?: Map<LibraryEntry, string[]>;
 }
 
 /** `#include` names of a C/C++ source, in order; comments are skipped, strings respected. */
@@ -73,8 +78,8 @@ const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) :
  * @param files project files, paths relative to `src/` (the generated `.ino.cpp` included);
  *              scanned in the given order
  */
-export function selectLibraries(files: SourceFile[], libraries: LibraryEntry[]): LdfResult {
-    if (libraries.length && libraries.every((l) => l.scan)) return selectLibrariesPio(files, libraries);
+export function selectLibraries(files: SourceFile[], libraries: LibraryEntry[], opts: LdfOptions = {}): LdfResult {
+    if (libraries.length && libraries.every((l) => l.scan)) return selectLibrariesPio(files, libraries, opts);
     return selectLibrariesByGraph(files, libraries);
 }
 
@@ -157,12 +162,23 @@ const SRC_EXTS = ["c", "cc", "cpp", "cxx", "c++"];
 interface Builder {
     lib: LibraryEntry | null;
     root: string;
+    /** Include dirs, absolute (LDF resolution). */
     incDirs: string[];
+    /** Include dirs as the compile line prints them. */
+    cliDirs: string[];
     order: number;
     processed: Set<string>;
     deps: Builder[];
+    circular: Builder[];
     dependent: boolean;
     built: boolean;
+    depsProcessed: boolean;
+    env: string[] | null;
+}
+
+export interface LdfOptions {
+    /** The project's `lib_deps` (raw specs): PlatformIO's ProjectAsLibBuilder.process_dependencies. */
+    libDeps?: string[];
 }
 
 const normAbs = (p: string) => {
@@ -176,7 +192,16 @@ const normAbs = (p: string) => {
     return lead + parts.join("/");
 };
 
-function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[]): LdfResult {
+/** SCons PrependUnique of a list: the new items (in order, once) before the existing ones. */
+export function prependUnique(list: string[], items: string[]): string[] {
+    const add: string[] = [];
+    for (const x of items) if (!list.includes(x) && !add.includes(x)) add.push(x);
+    return [...add, ...list];
+}
+
+const ciEq = (a: string | undefined, b: string | undefined) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
+
+function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[], opts: LdfOptions = {}): LdfResult {
     const projectPath = (p: string) => `${PROJECT}/${norm(p.replace(/^src\//, ""))}`;
     const includesOf = new Map<string, Array<{ name: string; quoted: boolean }>>();
     const sortKey = (i: { name: string; quoted: boolean }) => `${i.quoted ? '"' : "<"} ${i.name}`;
@@ -190,12 +215,16 @@ function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[]): Ldf
     const builders: Builder[] = libraries.map((l) => ({
         lib: l,
         root: l.scan!.root,
-        incDirs: l.includeDirs,
+        incDirs: l.scan!.absIncludeDirs ?? l.includeDirs,
+        cliDirs: l.includeDirs,
         order: l.scan!.order,
         processed: new Set(),
         deps: [],
+        circular: [],
         dependent: false,
         built: false,
+        depsProcessed: false,
+        env: null,
     }));
     for (const b of builders) {
         for (const [rel, incs] of Object.entries(b.lib!.scan!.files)) {
@@ -205,12 +234,13 @@ function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[]): Ldf
         }
     }
     const base = [...builders].sort((a, b) => a.order - b.order);
-    const project: Builder = { lib: null, root: PROJECT, incDirs: [PROJECT], order: -1, processed: new Set(), deps: [], dependent: false, built: false };
+    const project: Builder = { lib: null, root: PROJECT, incDirs: [PROJECT], cliDirs: [], order: -1, processed: new Set(), deps: [], circular: [], dependent: false, built: false, depsProcessed: true, env: null };
     const inBuilder = (b: Builder, p: string) => p.startsWith(b.root + "/");
     /** GetLibBuilders(): dependent builders first, otherwise PlatformIO's order. */
     const libBuilders = () => [...base].sort((a, b) => (a.dependent === b.dependent ? 0 : a.dependent ? -1 : 1));
     let cache: string[] | null = null;
     const unresolved: string[] = [];
+    const modeOf = (b: Builder) => (b === project ? "deep" : (b.lib!.scan!.ldfMode ?? "chain"));
 
     const implicitIncludes = (self: Builder, searchFiles: string[]): string[] => {
         if (!cache) cache = [PROJECT, ...libBuilders().flatMap((b) => b.incDirs)];
@@ -248,16 +278,44 @@ function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[]): Ldf
         return b.deps.includes(self) || b.deps.some((d) => alreadyDepends(d, self, seen));
     };
 
-    const dependOn = (self: Builder, lb: Builder, searchFiles: string[] | undefined) => {
-        if (self !== lb && !alreadyDepends(lb, self) && !self.deps.includes(lb)) {
-            self.deps.push(lb);
-            lb.dependent = true;
-            cache = null;
+    const dependOn = (self: Builder, lb: Builder, searchFiles: string[] | undefined, recursive = true) => {
+        if (self !== lb) {
+            if (alreadyDepends(lb, self)) self.circular.push(lb);
+            else if (!self.deps.includes(lb)) {
+                self.deps.push(lb);
+                lb.dependent = true;
+                cache = null;
+            }
         }
-        searchDeps(lb, searchFiles);
+        if (recursive) searchDeps(lb, searchFiles);
+    };
+
+    /** LibBuilderBase.is_dependency_compatible */
+    const dependencyCompatible = (lb: Builder, dep: { owner?: string; name: string; version?: string }) => {
+        const l = lb.lib!;
+        const have: Record<string, unknown> = { name: l.scan?.pkgName ?? l.name, version: l.version, ...(l.owner ? { owner: l.owner } : {}) };
+        const want: Record<string, unknown> = { name: dep.name };
+        if (dep.owner) want.owner = dep.owner;
+        if (dep.version && isValidSpec(dep.version)) want.version = dep.version;
+        return isCompatible(want, have);
+    };
+
+    /** PlatformIOLibBuilder.process_dependencies (library.json `dependencies`) */
+    const processDependencies = (self: Builder) => {
+        const deps = self.lib?.scan?.dependencies;
+        if (!deps?.length || self.depsProcessed) return;
+        self.depsProcessed = true;
+        for (const dep of deps) {
+            const lb = libBuilders().find((x) => dependencyCompatible(x, dep));
+            if (lb && !self.deps.includes(lb)) dependOn(self, lb, undefined);
+        }
     };
 
     const searchDeps = (self: Builder, searchFiles: string[] | undefined) => {
+        processDependencies(self);
+        const mode = modeOf(self);
+        if (mode === "off") return;
+        if (mode.startsWith("deep") && self !== project) searchFiles = self.lib!.scan!.sources.map((s) => `${self.root}/${s}`);
         const map = new Map<Builder, string[]>();
         for (const inc of implicitIncludes(self, searchFiles ?? [])) {
             const owner = libBuilders().find((b) => inBuilder(b, inc));
@@ -268,29 +326,81 @@ function selectLibrariesPio(files: SourceFile[], libraries: LibraryEntry[]): Ldf
         for (const [lb, fs] of map) dependOn(self, lb, fs);
     };
 
+    // ProjectAsLibBuilder.process_dependencies: lib_deps by package spec (storage order), else by name
+    const storageOf = (b: Builder) => b.root.slice(0, b.root.lastIndexOf("/"));
+    const storages: string[] = [];
+    for (const b of base) if (!storages.includes(storageOf(b))) storages.push(storageOf(b));
+    const foundLbs: Builder[] = [];
+    for (const raw of opts.libDeps ?? []) {
+        let spec: LibSpec | null = null;
+        try {
+            spec = parseLibSpec(raw);
+        } catch {
+            spec = null;
+        }
+        let found = false;
+        if (spec && !spec.uri && spec.name) {
+            const req = spec.requirements ? new SimpleSpec(spec.requirements) : null;
+            for (const st of storages) {
+                const cands = base.filter((b) => {
+                    if (storageOf(b) !== st) return false;
+                    const l = b.lib!;
+                    if (spec!.owner && !ciEq(spec!.owner, l.owner)) return false;
+                    if (!ciEq(spec!.name, l.scan?.pkgName ?? l.name)) return false;
+                    return !req || (l.version ? req.match(castVersion(l.version)) : false);
+                });
+                if (!cands.length) continue;
+                const best = cands.reduce((a, b) => (castVersion(b.lib!.version ?? "0.0.0").compare(castVersion(a.lib!.version ?? "0.0.0")) > 0 ? b : a));
+                if (!project.deps.includes(best)) {
+                    dependOn(project, best, undefined, false);
+                    foundLbs.push(best);
+                }
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
+        const byName = libBuilders().find((b) => b.lib!.name === raw);
+        if (byName && !project.deps.includes(byName)) dependOn(project, byName, undefined);
+    }
+    for (const lb of foundLbs) searchDeps(lb, undefined);
+
     // the project: every source file (deep), in the given order
     searchDeps(
         project,
         files.filter((f) => /\.(c|cc|cpp|cxx|ino|pde|S)$/i.test(f.path)).map((f) => projectPath(f.path)),
     );
     // _correct_found_libs
-    const found = base.filter((b) => b.dependent);
-    for (const b of base) if (found.includes(b)) searchDeps(b, b.lib!.scan!.sources.map((s) => `${b.root}/${s}`));
-    const found2 = new Set(base.filter((b) => b.dependent));
-    for (const b of base) b.deps = b.deps.filter((d) => found2.has(d));
-    project.deps = project.deps.filter((d) => found2.has(d));
+    if (project.deps.length) {
+        const found = base.filter((b) => b.dependent);
+        for (const b of base) if (found.includes(b)) searchDeps(b, b.lib!.scan!.sources.map((s) => `${b.root}/${s}`));
+        const found2 = new Set(base.filter((b) => b.dependent));
+        for (const b of base) b.deps = b.deps.filter((d) => found2.has(d));
+        project.deps = project.deps.filter((d) => found2.has(d));
+    }
 
+    // build(): post-order link list; CPPPATH by SCons PrependUnique like LibBuilderBase.build
     const post: LibraryEntry[] = [];
-    const build = (b: Builder, stack: Set<Builder>) => {
-        if (stack.has(b)) return;
+    const build = (b: Builder, stack: Set<Builder>): string[] => {
+        if (b.env) return b.env;
+        if (stack.has(b)) return [];
         stack.add(b);
-        for (const d of b.deps) build(d, stack);
+        let env: string[] = [];
+        for (const d of b.deps) env = prependUnique(env, build(d, stack));
+        for (const c of b.circular) env = prependUnique(env, c.cliDirs);
         stack.delete(b);
-        if (b.built) return;
-        b.built = true;
-        post.push(b.lib!);
+        env = prependUnique(env, b.cliDirs);
+        b.env = env;
+        if (!b.built) {
+            b.built = true;
+            post.push(b.lib!);
+        }
+        return env;
     };
-    for (const b of project.deps) build(b, new Set());
-    const includeArgs = [...post].reverse().flatMap((l) => l.includeDirs.flatMap((d) => ["-I", d]));
-    return { libraries: post, includeArgs, unresolved };
+    let projEnv: string[] = [];
+    for (const b of project.deps) projEnv = prependUnique(projEnv, build(b, new Set()));
+    const includeArgs = projEnv.flatMap((d) => ["-I", d]);
+    const libIncludeArgs = new Map<LibraryEntry, string[]>();
+    for (const b of builders) if (b.env) libIncludeArgs.set(b.lib!, b.env.flatMap((d) => ["-I", d]));
+    return { libraries: post, includeArgs, unresolved, libIncludeArgs };
 }

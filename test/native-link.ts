@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { loadConfig, nativeTool, REPO, run } from "../pack/common.ts";
 import { writeArchive } from "../src/ar";
+import { ldTemplate } from "../src/compile";
 import { expandArgs } from "../src/driver";
 import type { BoardManifest, LinkIndex } from "../src/manifest";
 
@@ -81,13 +82,14 @@ export function nativeLink(pack: string, m: BoardManifest, intermediates: Map<st
     // sketch objects of the previous link must not linger
     rmSync(join(cwd, m.fs.buildDir, "src"), { recursive: true, force: true });
     for (const [p, d] of intermediates) {
-        if (!p.endsWith(".o")) continue;
+        // objects, and the archives of libraries built at compile time (lib_deps) in the build dir
+        if (!p.endsWith(".o") && !(p.endsWith(".a") && p.startsWith(`${m.fs.cwd}/${m.fs.buildDir}/`))) continue;
         const f = join(root, p);
         mkdirSync(dirname(f), { recursive: true });
         writeFileSync(f, d);
     }
     const elf = `${m.fs.buildDir}/firmware.native.elf`;
-    const argv = expandArgs(m.link.ld, { ELF: elf }, { OBJS: objs, LIBS: libs }).map((a) => a.replace(/^(-L|-T)?(\/(?:opt|work)\/)/, (_, pre: string | undefined, p: string) => `${pre ?? ""}${root}${p}`));
+    const argv = expandArgs(ldTemplate(m), { ELF: elf }, { OBJS: objs, LIBS: libs }).map((a) => a.replace(/^(-L|-T)?(\/(?:opt|work)\/)/, (_, pre: string | undefined, p: string) => `${pre ?? ""}${root}${p}`));
     const b = loadConfig().boards.find((x) => x.id === m.id)!;
     mkdirSync(join(cwd, m.fs.buildDir), { recursive: true });
     rmSync(join(cwd, elf), { force: true });

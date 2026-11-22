@@ -46,7 +46,10 @@ export interface LoadedTool {
  */
 export function factoryFromSource(js: string): ToolFactory {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const f = new Function("process", "require", "__filename", "__dirname", `${js}\nreturn createTool;`);
+    // Emscripten keeps the environment in a private `var ENV={}`: let the caller pass one
+    // (`Module.ENV`, e.g. SOURCE_DATE_EPOCH for __DATE__/__TIME__ like the native builds)
+    const src = js.replace("var ENV={};", 'var ENV=Module["ENV"]||{};');
+    const f = new Function("process", "require", "__filename", "__dirname", `${src}\nreturn createTool;`);
     return f(undefined, undefined, undefined, undefined) as ToolFactory;
 }
 
@@ -72,6 +75,8 @@ export interface RunOptions {
     thisProgram: string;
     /** Files to read back after the run (missing ones are skipped). */
     outputs?: string[];
+    /** Environment variables of the tool (getenv). */
+    env?: Record<string, string>;
 }
 
 export interface RunResult {
@@ -90,6 +95,7 @@ export async function runTool(tool: LoadedTool, argv: string[], opts: RunOptions
     const M = await tool.factory({
         noInitialRun: true,
         thisProgram: opts.thisProgram,
+        ...(opts.env ? { ENV: { ...opts.env } } : {}),
         print: (s: string) => lines.push(s),
         printErr: (s: string) => lines.push(s),
         quit: (_status: number, toThrow: unknown) => {

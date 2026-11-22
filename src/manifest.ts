@@ -30,7 +30,10 @@ export interface ToolRef {
 export interface LibraryEntry {
     name: string;
     version?: string;
-    origin: "framework" | "allowed";
+    /** PlatformIO registry owner (`.piopm` of an installed package); absent for framework libraries. */
+    owner?: string;
+    /** "registry": fetched at compile time from a project's `lib_deps` (never in a pack). */
+    origin: "framework" | "allowed" | "registry";
     includeDirs: string[];
     headers: string[];
     deps: string[];
@@ -45,7 +48,20 @@ export interface LibraryEntry {
      * header/source file in it with the file's `#include`s in SCons' order (`<name` / `"name`),
      * the source files its src_filter selects, and its place in PlatformIO's library-builder list.
      */
-    scan?: { root: string; files: Record<string, string[]>; sources: string[]; order: number };
+    scan?: {
+        root: string;
+        files: Record<string, string[]>;
+        sources: string[];
+        order: number;
+        /** library.json `build.libLDFMode` (registry libraries; default: the project's chain). */
+        ldfMode?: string;
+        /** library.json `dependencies` (PlatformIO builders only: Arduino builders leave them to the LDF). */
+        dependencies?: Array<{ owner?: string; name: string; version?: string }>;
+        /** Include dirs as absolute virtual paths when `includeDirs` are project-relative (registry libraries). */
+        absIncludeDirs?: string[];
+        /** Package name as the package manager recorded it (lib_deps matching). */
+        pkgName?: string;
+    };
 }
 
 export interface BoardManifest {
@@ -67,6 +83,34 @@ export interface BoardManifest {
         c: { cc1: string[]; as: string[] };
     };
     pch?: { gch: FileRef; path: string; header: string; args: string[] };
+    /** SOURCE_DATE_EPOCH of the pack's native builds (core, reference builds): the compilers get it too (__DATE__/__TIME__). */
+    sourceDateEpoch?: number;
+    /**
+     * Assembler sources of libraries built at compile time: `.S`/`.sx`/`.spp` go through the C
+     * preprocessor (`cc1 -E -lang-asm`, then `as`), `.s` straight to `as` — the native driver's
+     * `-###` of PlatformIO's own command lines. `${LIBINC}` / `${SRC}` / `${OBJ}` / `${ASM}` like `compile`.
+     */
+    compileAsm?: { S: { cc1: string[]; as: string[] }; s: { as: string[] } };
+    /**
+     * What resolving and building PlatformIO registry libraries (`lib_deps`) needs. Library
+     * compile lines are `compile.*` without the project's own `-I src`.
+     */
+    registry?: {
+        /** PlatformIO platform name (atmelavr, espressif32, espressif8266): registry compatibility. */
+        platform: string;
+        framework: string;
+        /** PlatformIO's `lib_archive` of the board (false on pioarduino: objects are linked one by one). */
+        libArchive: boolean;
+        /** Library names of every installed framework (PlatformIO's `is_builtin_lib`): owner-less dependencies of these are not installed. */
+        builtinNames: string[];
+        /** `.pio/libdeps/<env>` relative to `fs.cwd`. */
+        libdepsDir: string;
+    };
+    /**
+     * Every header under the framework's include directories, one content-addressed file each
+     * (`files/<sha>.h`), for headers the closure bundle lacks: JSON `HeaderIndex`.
+     */
+    headerIndex?: FileRef;
     libraries: LibraryEntry[];
     link: {
         ld: string[];
@@ -80,6 +124,13 @@ export interface BoardManifest {
         | { kind: "esp8266-image"; image: Esp8266ImageOptions; eboot: FileRef; appAddress: number };
     size: SizeLimits;
     stats: Record<string, { raw: number; brotli: number }>;
+}
+
+/** `headerIndex`: include roots (virtual, in search order) and their files. */
+export interface HeaderIndex {
+    dirs: string[];
+    /** [dir index, path relative to the dir, sha256 (first 32 hex = file name), size] */
+    files: Array<[number, string, string, number]>;
 }
 
 /** Lazy-link index (ESP32). Symbols are indices into `strings`. */

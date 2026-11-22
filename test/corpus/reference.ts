@@ -67,15 +67,16 @@ export type RefVariant = "plain" | "file-map";
 /** Where the reused PlatformIO projects live (CORPUS_PROJECTS: another parent dir, e.g. for a second run). */
 export const PROJECTS_ROOT = resolve(process.env.CORPUS_PROJECTS ?? WORK, "corpus-proj");
 
-export function refKey(board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain"): string {
+/** `extraIni`: platformio.ini lines of the env (lib_deps of registry sketches) — part of the key. */
+export function refKey(board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain", extraIni: string[] = []): string {
     const cfg = loadConfig();
     const b = cfg.boards.find((x) => x.id === board)!;
-    return sha256(JSON.stringify({ packVersion: cfg.packVersion, board, ini: platformioIni(cfg, b), files: [...files].sort((x, y) => (x.path < y.path ? -1 : 1)), ...(variant === "plain" ? {} : { variant }) })).slice(0, 16);
+    return sha256(JSON.stringify({ packVersion: cfg.packVersion, board, ini: platformioIni(cfg, b), files: [...files].sort((x, y) => (x.path < y.path ? -1 : 1)), ...(variant === "plain" ? {} : { variant }), ...(extraIni.length ? { extraIni } : {}) })).slice(0, 16);
 }
 
-export function refDirOf(sketchId: string, board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain"): string {
+export function refDirOf(sketchId: string, board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain", extraIni: string[] = []): string {
     const cfg = loadConfig();
-    return join(REF_ROOT, cfg.packVersion, board, `${sketchId.replace(/[^A-Za-z0-9_.-]+/g, "_")}.${refKey(board, files, variant)}`);
+    return join(REF_ROOT, cfg.packVersion, board, `${sketchId.replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 120)}.${refKey(board, files, variant, extraIni)}`);
 }
 
 /**
@@ -90,8 +91,8 @@ const PENV_RACE = /No module named 'esptool|'esptool' is not a package|Failed to
 const penvRace = (log: string) =>
     (PENV_RACE.test(log) || /MissingPackageManifestError|Installing \S*tool-esptoolpy/.test(log)) && !/: (fatal )?error: |undefined reference to/.test(log);
 
-export function cachedRef(sketchId: string, board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain"): NativeRef | null {
-    const dir = refDirOf(sketchId, board, files, variant);
+export function cachedRef(sketchId: string, board: string, files: Array<{ path: string; content: string }>, variant: RefVariant = "plain", extraIni: string[] = []): NativeRef | null {
+    const dir = refDirOf(sketchId, board, files, variant, extraIni);
     const p = join(dir, "result.json");
     if (!existsSync(p)) return null;
     const r = JSON.parse(readFileSync(p, "utf8")) as NativeRef;
@@ -122,26 +123,26 @@ export class RefBuilder {
     }
 
     /** The reference build of a sketch (once per builder, cached on disk unless `force`). */
-    build(sketchId: string, files: Array<{ path: string; content: string }>, force = false, variant: RefVariant = "plain"): Promise<NativeRef> {
-        const key = refDirOf(sketchId, this.board, files, variant);
+    build(sketchId: string, files: Array<{ path: string; content: string }>, force = false, variant: RefVariant = "plain", extraIni: string[] = []): Promise<NativeRef> {
+        const key = refDirOf(sketchId, this.board, files, variant, extraIni);
         let p = this.pending.get(key);
         if (!p) {
-            p = this.buildNow(sketchId, files, force, variant);
+            p = this.buildNow(sketchId, files, force, variant, extraIni);
             this.pending.set(key, p);
         }
         return p;
     }
 
-    private async buildNow(sketchId: string, files: Array<{ path: string; content: string }>, force: boolean, variant: RefVariant): Promise<NativeRef> {
+    private async buildNow(sketchId: string, files: Array<{ path: string; content: string }>, force: boolean, variant: RefVariant, extraIni: string[]): Promise<NativeRef> {
         if (!force) {
-            const c = cachedRef(sketchId, this.board, files, variant);
+            const c = cachedRef(sketchId, this.board, files, variant, extraIni);
             if (c) return c;
         }
         const proj = await this.acquire();
         try {
             const t = Date.now();
             mkdirSync(proj, { recursive: true });
-            writeProject(proj, this.board, files, variant === "file-map" ? [`build_src_flags = -fmacro-prefix-map=${proj}=${loadConfig().virtualRoots.project}`] : []);
+            writeProject(proj, this.board, files, [...(variant === "file-map" ? [`build_src_flags = -fmacro-prefix-map=${proj}=${loadConfig().virtualRoots.project}`] : []), ...extraIni]);
             const out = join(proj, ".pio/build", this.board);
             for (const f of OUT_FILES) rmSync(join(out, f), { force: true });
             let r = await pioRun(proj, this.board);
@@ -149,7 +150,7 @@ export class RefBuilder {
                 await new Promise((res) => setTimeout(res, 5000 + Math.random() * 15000));
                 r = await pioRun(proj, this.board);
             }
-            const dir = refDirOf(sketchId, this.board, files, variant);
+            const dir = refDirOf(sketchId, this.board, files, variant, extraIni);
             rmSync(dir, { recursive: true, force: true });
             mkdirSync(dir, { recursive: true });
             if (r.ok) for (const f of OUT_FILES) if (existsSync(join(out, f))) copyFileSync(join(out, f), join(dir, f));

@@ -22,7 +22,11 @@ export type KnownBoard =
 export type Board = KnownBoard | (string & {});
 
 export interface SourceFile {
-    /** Relative to the project's `src/` (a leading `src/` is dropped). `.ino`/`.pde`/`.cpp`/`.c`/`.h`. */
+    /**
+     * Relative to the project's `src/` (a leading `src/` is dropped). `.ino`/`.pde`/`.cpp`/`.c`/`.h`,
+     * plus `platformio.ini` at the top: its `lib_deps` (PlatformIO registry libraries) and
+     * `build_flags` (`[env]` + the first `[env:*]`).
+     */
     path: string;
     content: string;
 }
@@ -68,6 +72,28 @@ export interface CompileResponse {
     durationMs: number;
     /** Where the time went and what was downloaded (diagnostics, benchmarks). */
     stats?: CompileStats;
+    /** A library problem that is not the sketch's code (lib_deps / registry); also an error with `file: null`. */
+    problem?: LibraryProblem;
+    /**
+     * Headers no library of the pack or of lib_deps provides (the compiler's "No such file or
+     * directory"), with registry libraries that ship them (framework arduino, the board's platform).
+     */
+    missingHeaders?: MissingHeader[];
+}
+
+export type LibraryProblem =
+    | { kind: "libNotFound"; spec: string }
+    | { kind: "libVersion"; spec: string; available: string[] }
+    | { kind: "libIncompatible"; spec: string; platform: string }
+    | { kind: "libUnsupported"; spec: string; reason: string }
+    | { kind: "registryUnreachable" };
+
+export interface MissingHeader {
+    header: string;
+    /** The including file as the caller named it (or a library/framework path), and the line. */
+    file: string | null;
+    line: number | null;
+    suggestions: Array<{ owner: string; name: string; version: string; description: string }>;
 }
 
 export interface CompileStats {
@@ -81,6 +107,8 @@ export interface CompileStats {
     /** Lazy linking: archive members linked / fetched individually. */
     members?: { linked: number; fetched: number };
     libraries: string[];
+    /** Registry libraries (lib_deps) built: name@version, and how many of their TUs came from the cache. */
+    registry?: { libraries: string[]; compiled: number; cached: number };
 }
 
 export type CompilePhase = "download" | "compile" | "link" | "done";
@@ -90,4 +118,6 @@ export interface CompileProgress {
     /** Bytes (download) or steps (compile/link) done and expected. */
     loaded: number;
     total: number;
+    /** What is being worked on, for people: a library name while it downloads or compiles. */
+    label?: string;
 }

@@ -1,6 +1,7 @@
 {
   "$comment": "Pack builder input. Boards and libraries are data: edit this file (or pass --config) to build a pack for another set. Library specs use PlatformIO package syntax; 'dir' groups libraries by arch like the AI Hub image (/opt/pio-libs/<dir>): 'all' = every board.",
-  "packVersion": "2026.11.20",
+  "packVersion": "2026.11.22",
+  "sourceDate": "2026.11.20",
   "virtualRoots": {
     "packages": "/opt/pio/packages",
     "libs": "/opt/pio-libs",

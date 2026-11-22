@@ -9,3 +9,7 @@ export * from "./src/ar";
 export { compileFirmware, prewarm, resetCompilers, inlineExecutor, UnknownBoardError, type CompileOptions, type CompileResult, type ToolExecutor } from "./src/compile";
 export { createCompilerWorker, createWorkerPool, type CompilerWorker, type WorkerPool, type WorkerCompileOptions } from "./src/pool";
 export type { BoardManifest, PackIndex, LibraryEntry, LinkIndex, FileRef } from "./src/manifest";
+export { searchLibraries, suggestForHeader, RegistryClient, RegistryUnreachableError, type LibrarySearchResult, type HeaderSuggestion } from "./src/registry/client";
+export { parsePlatformioIni, setLibDeps, type PlatformioIni } from "./src/registry/ini";
+export { parseLibSpec, serializeLibDep, humanizeLibSpec, type LibSpec } from "./src/registry/spec";
+export { problemMessage } from "./src/registry/resolve";

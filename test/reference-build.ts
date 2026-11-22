@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { isPioarduino, loadConfig, PIO, pioEnv, REPO, run, WORK } from "../pack/common.ts";
+import { isPioarduino, loadConfig, PIO, pioEnv, REPO, run, sha256, WORK } from "../pack/common.ts";
 import { platformioIni } from "../pack/probe.ts";
 
 /** The files of a test sketch: test/sketches/<name>.ino or every file of test/sketches/<name>/. */
@@ -18,7 +18,7 @@ export function sketchFiles(sketch: string): Array<{ path: string; content: stri
     return [{ path: `${sketch}.ino`, content: readFileSync(join(REPO, "test/sketches", `${sketch}.ino`), "utf8") }];
 }
 
-export const refDir = (sketch: string, board: string) => join(WORK, "ref", `${sketch}.${board}`);
+export const refDir = (sketch: string, board: string, extraIni: string[] = []) => join(WORK, "ref", `${sketch}.${board}${extraIni.length ? `.${sha256(extraIni.join("\n")).slice(0, 8)}` : ""}`);
 
 /**
  * (Re)writes a PlatformIO project: platformio.ini (plus `extraIni` lines in the env section) and
@@ -65,12 +65,12 @@ export function pioRunArgs(board: string): string[] {
     return b && isPioarduino(b.platform) ? ["run", "-e", board] : ["run", "-v", "-e", board];
 }
 
-export function referenceBuild(sketch: string, board: string, force = false): string {
-    const dir = refDir(sketch, board);
+export function referenceBuild(sketch: string, board: string, force = false, extraIni: string[] = []): string {
+    const dir = refDir(sketch, board, extraIni);
     const out = join(dir, ".pio/build", board);
     if (!force && existsSync(join(out, "firmware.elf"))) return out;
     rmSync(dir, { recursive: true, force: true });
-    writeProject(dir, board, sketchFiles(sketch));
+    writeProject(dir, board, sketchFiles(sketch), extraIni);
     const r = run(PIO, pioRunArgs(board), { cwd: dir, env: pioEnv(loadConfig()) });
     writeFileSync(join(dir, "build.log"), r.stdout + r.stderr);
     if (r.code !== 0) throw new Error(`pio run ${sketch}.${board} failed:\n${(r.stdout + r.stderr).slice(-3000)}`);

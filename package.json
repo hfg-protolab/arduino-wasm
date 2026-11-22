@@ -22,7 +22,9 @@
         "./manifest": "./src/manifest.ts",
         "./resolve": "./src/resolve.ts",
         "./ldf": "./src/ldf.ts",
-        "./driver": "./src/driver.ts"
+        "./driver": "./src/driver.ts",
+        "./registry": "./src/registry/client.ts",
+        "./ini": "./src/registry/ini.ts"
     },
     "scripts": {
         "test": "bun test src test",

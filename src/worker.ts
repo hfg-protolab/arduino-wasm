@@ -46,7 +46,7 @@ async function handle(m: ToWorker) {
             if (!map) throw new Error(`file set ${f.id} unknown in this worker`);
             return map;
         });
-        const result = await runTool(tool, m.argv, { files, cwd: m.cwd, mkdirs: m.mkdirs, thisProgram: m.thisProgram, outputs: m.outputs });
+        const result = await runTool(tool, m.argv, { files, cwd: m.cwd, mkdirs: m.mkdirs, thisProgram: m.thisProgram, outputs: m.outputs, env: m.env });
         post({ type: "result", id: m.id, result });
         return;
     }

@@ -36,7 +36,7 @@ import { compareWithNative, diffCount, linkObjects, nativeLink } from "../native
 import { type CorpusSketch, loadCorpus, matchSketch } from "./corpus";
 import { type NativeRef, RefBuilder } from "./reference";
 
-type Status = "pass" | "fail" | "skipped" | "header-gap";
+type Status = "pass" | "fail" | "skipped" | "header-gap" | "unsupported";
 
 export interface CaseResult {
     sketch: string;
@@ -113,9 +113,11 @@ export function classifyImageDiff(app: Uint8Array, ref: Uint8Array, elf: ElfFile
 async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: RefBuilder): Promise<CaseResult> {
     const base = { sketch: s.id, board };
     if (s.skip[board]) return { ...base, status: "skipped", reason: s.skip[board] };
-    const refP = refs.build(s.id, s.files, flag("force-ref"));
+    const extraIni = s.libDeps?.length ? [`lib_deps = ${s.libDeps.join(", ")}`] : [];
+    const refP = refs.build(s.id, s.files, flag("force-ref"), "plain", extraIni);
     const t = performance.now();
-    const r = await compileFirmware({ board, files: s.files }, { packBaseUrl: PACK_BASE, fetch: diskFetch(PACK), keepIntermediates: true, cacheStorage: false });
+    const wasmFiles = s.libDeps?.length ? [...s.files, { path: "platformio.ini", content: `[env:${board}]\nlib_deps =\n${s.libDeps.map((d) => `    ${d}`).join("\n")}\n` }] : s.files;
+    const r = await compileFirmware({ board, files: wasmFiles }, { packBaseUrl: PACK_BASE, fetch: diskFetch(PACK), keepIntermediates: true, cacheStorage: false });
     const wasmSeconds = Math.round((performance.now() - t) / 100) / 10;
     const ref = await refP;
     const timing = { wasmSeconds, refSeconds: ref.seconds, refCached: ref.cached };
@@ -133,6 +135,9 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
         if (!nativeErr.length) return res("fail", `no native errors parsed:\n${ref.logTail?.slice(-1500)}`);
         return sameDiag ? res("pass") : res("fail", `diagnostics differ\n  ${diagDiff()}`);
     }
+    if (r.problem && (r.problem.kind === "libUnsupported" || r.problem.kind === "libIncompatible")) {
+        return res("unsupported", `${r.problem.kind}: ${r.errors[0]?.message ?? ""} (pio: ${ref.ok ? "ok" : "fails"})`);
+    }
     if (!ref.ok) {
         const first = nativeErr[0] ?? ref.logTail?.trim().split("\n").slice(-3).join(" | ") ?? "?";
         if (r.ok) return res("fail", `wasm compiles, pio does not: ${first}`);
@@ -148,9 +153,9 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
     // 1. native ld over the same stripped pack files
     const elfPath = `${m.fs.cwd}/${m.fs.buildDir}/firmware.elf`;
     const elf = r.intermediates!.get(elfPath)!;
-    const objs = linkObjects(m, r.intermediates!, r.stats!.libraries);
+    const objs = r.link!.objects;
     // the wasm link's library order (LDF post-order)
-    const libs = r.stats!.libraries.map((n) => m.libraries.find((l) => l.name === n)!).filter((l) => l.archive).map((l) => l.archive!.path);
+    const libs = r.link!.archives;
     let native;
     try {
         native = nativeLink(PACK, m, r.intermediates!, objs, libs, join(OUT, "work"));
@@ -179,7 +184,7 @@ async function runCase(s: CorpusSketch, board: string, m: BoardManifest, refs: R
     if (vs.problems.length && vs.embedsProjectPath && m.arch !== "avr") {
         // the sketch expands __FILE__ (log_e, assert): compare with a reference whose __FILE__
         // names /work/project like the pack's virtual project dir
-        const mapped = await refs.build(s.id, s.files, flag("force-ref"), "file-map");
+        const mapped = await refs.build(s.id, s.files, flag("force-ref"), "file-map", extraIni);
         if (mapped.ok) {
             vs = comparePio(r, m, elf, mapped);
             fileMap = true;
@@ -248,7 +253,7 @@ async function child(board: string) {
     const m = JSON.parse(readFileSync(mPath, "utf8")) as BoardManifest;
     const refs = new RefBuilder(board, Number(opt("slots") ?? 1));
     // queue the reference builds ahead (they run in pio processes while we compile)
-    for (const s of corpus) if (!s.skip[board]) void refs.build(s.id, s.files, flag("force-ref")).catch(() => {});
+    for (const s of corpus) if (!s.skip[board]) void refs.build(s.id, s.files, flag("force-ref"), "plain", s.libDeps?.length ? [`lib_deps = ${s.libDeps.join(", ")}`] : []).catch(() => {});
     let i = 0;
     for (const s of corpus) {
         let r: CaseResult;
@@ -269,14 +274,14 @@ function table(results: CaseResult[], boards: string[]): string {
         const rs = results.filter((r) => r.board === b);
         const n = (s: Status) => rs.filter((r) => r.status === s).length;
         const eh = rs.filter((r) => r.ehFrameBytes).length;
-        return `| ${b} | ${rs.length} | ${n("pass")} | ${n("fail")} | ${n("skipped")} | ${n("header-gap")} | ${eh} |`;
+        return `| ${b} | ${rs.length} | ${n("pass")} | ${n("fail")} | ${n("skipped")} | ${n("header-gap")} | ${n("unsupported")} | ${eh} |`;
     });
     const tot = (s: Status) => results.filter((r) => r.status === s).length;
     return [
-        "| board | cases | pass | fail | skipped | header-gap | pass with .eh_frame diff |",
-        "|---|---|---|---|---|---|---|",
+        "| board | cases | pass | fail | skipped | header-gap | unsupported | pass with .eh_frame diff |",
+        "|---|---|---|---|---|---|---|---|",
         ...rows,
-        `| **all** | ${results.length} | ${tot("pass")} | ${tot("fail")} | ${tot("skipped")} | ${tot("header-gap")} | ${results.filter((r) => r.ehFrameBytes).length} |`,
+        `| **all** | ${results.length} | ${tot("pass")} | ${tot("fail")} | ${tot("skipped")} | ${tot("header-gap")} | ${tot("unsupported")} | ${results.filter((r) => r.ehFrameBytes).length} |`,
     ].join("\n");
 }
 

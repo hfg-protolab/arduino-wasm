@@ -20,6 +20,7 @@ import { basename, join, relative } from "node:path";
 import { type BoardConfig, loadConfig, PKG, REPO } from "../../pack/common.ts";
 import { frameworkPackage, libsRoot } from "../../pack/probe.ts";
 import { BROKEN } from "./broken";
+import { loadRegistryCorpus } from "./registry";
 
 export interface CorpusSketch {
     id: string;
@@ -30,6 +31,8 @@ export interface CorpusSketch {
     skip: Record<string, string>;
     /** Deliberately broken: the native and the wasm diagnostics must agree. */
     broken?: boolean;
+    /** Registry sketches: `lib_deps` of platformio.ini (wasm: the file; pio: the env line). */
+    libDeps?: string[];
 }
 
 /** PlatformIO boards whose MCU talks USB itself (Keyboard/Mouse/PluggableUSB): 09.USB runs there. */
@@ -114,6 +117,17 @@ export function loadCorpus(): CorpusSketch[] {
     }
 
     for (const b of BROKEN) out.push({ id: `broken/${b.id}`, files: b.files, boards: b.boards, skip: {}, broken: true });
+
+    // registry libraries (test/corpus/registry.ts): opt-in, CORPUS_REGISTRY_TOP=<n> (examples per library: CORPUS_REGISTRY_EXAMPLES, default 3)
+    const top = Number(process.env.CORPUS_REGISTRY_TOP ?? 0);
+    if (top > 0) {
+        const perLib = Number(process.env.CORPUS_REGISTRY_EXAMPLES ?? 3);
+        const platformOf = (b: BoardConfig) => (b.arch === "avr" ? "atmelavr" : b.arch === "esp8266" ? "espressif8266" : "espressif32");
+        for (const lib of loadRegistryCorpus().slice(0, top)) {
+            const on = ids((b) => !lib.platforms.length || lib.platforms.includes("*") || lib.platforms.includes(platformOf(b)));
+            for (const ex of lib.examples.slice(0, perLib)) out.push({ id: `reg/${lib.owner}/${lib.name}/${ex.id}`, files: ex.files, boards: on, skip: {}, libDeps: [`${lib.owner}/${lib.name}@${lib.version}`] });
+        }
+    }
     return out;
 }
 

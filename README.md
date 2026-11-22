@@ -44,6 +44,28 @@ Caching: pack files are content-addressed (serve `files/` with `Cache-Control: i
 
 The tool glue is evaluated with `new Function` (it must not detect Node): a page with a Content-Security-Policy needs `'unsafe-eval'` (or `'wasm-unsafe-eval'` plus a CSP-friendly loader) for the worker script.
 
+## PlatformIO registry libraries (`lib_deps`)
+
+Put a `platformio.ini` next to the sketch files; its `lib_deps` (`[env]` plus the first `[env:*]`) name libraries of the PlatformIO registry, which are fetched, built and linked in the browser exactly like `pio run` would:
+
+```ts
+const res = await compileFirmware(
+    { board: "uno", files: [{ path: "main.ino", content: sketch }, { path: "platformio.ini", content: "[env]\nlib_deps = adafruit/Adafruit BME280 Library@^2.3.0\n" }] },
+    { packBaseUrl, registryBase: "/firmware-libs/", onProgress: (p) => console.log(p.phase, p.label, p.loaded, p.total) },
+);
+if (res.problem) show(res.problem);            // { kind: "libNotFound" | "libVersion" | "libIncompatible" | "libUnsupported" | "registryUnreachable", … }
+if (res.missingHeaders) suggest(res.missingHeaders); // [{ header, file, line, suggestions: [{ owner, name, version, description }] }]
+```
+
+- **Resolving** follows PlatformIO 6.2 (`pio pkg install` for the env, then the LDF's own install step): owner/name specs with semver requirements, manifest dependencies (library.json `dependencies`, library.properties `depends`), framework libraries never installed, the same versions and directory names. Owner-less specs are LDF hints, as in PlatformIO. Git/URL specs are not supported (`libUnsupported`).
+- **Building** ports PlatformIO's library builders (`piolib.py`): library.json `build.flags/unflags/srcFilter/srcDir/includeDir/libArchive/libLDFMode/libCompatMode`, library.properties, `src`/`utility` layouts; the compile lines are the pack's (`compile.*` without the project's `-I src`, `compileAsm` for `.S`/`.s`), the include path PlatformIO's (SCons `PrependUnique` over the dependency graph); AVR/ESP8266 libraries become `lib<Name>.a`, pioarduino links their objects one by one. The pack's precompiled libraries stay the fast path: lib_extra_dirs come before `.pio/libdeps` in PlatformIO's storage order, so a pack library of the same name wins unless `lib_deps` pins another version.
+- **Hosting:** with `registryBase`, metadata comes from `${registryBase}api/v3/<path>?<query>` (a pass-through to `https://api.registry.platformio.org/v3/`) and packages from `${registryBase}dl/<sha256>?url=<encodeURIComponent(download_url)>` (the `.tar.gz`; the sha256 is checked here too). Without it, the registry is called directly (Node; browsers cannot follow the registry's download redirect, whose CORS header is duplicated).
+- **Caching:** tarballs (by sha256), the resolved lock (used when the registry is unreachable) and library objects (key: pack version, board, argv, package sha256s) are kept in Cache Storage.
+- **Framework headers** the closure bundle lacks are fetched one by one from the pack's `headerIndex` when the compiler reports them missing, and the translation unit is compiled again.
+- Not supported: library.json `extraScript` (Python at build time), precompiled libraries (`precompiled=true`), linker flags in library flags, `.asm` sources, `chain+`/`deep+` LDF modes are treated as `chain`/`deep` (no preprocessor evaluation). `build_flags` of platformio.ini: `-D`/`-U` apply to the sketch and to libraries built from `lib_deps` — the precompiled core and pack libraries are not rebuilt (a warning says so).
+- Registry corpus (`CORPUS_REGISTRY_TOP=30 CORPUS_REGISTRY_EXAMPLES=2`, uno/esp32dev/esp32-c3/nodemcu, 184 cases): 119 byte-identical to `pio run`, 55 fail in both, 10 open: FastLED on uno (the AVR wasm `cc1plus` traps, `call_indirect` signature mismatch), FastLED ×2 on esp32dev (264 B less flash), RadioLib ×2 on nodemcu (`chain+` approximated as `chain`), ArduinoJson ×2 and FastLED Animartrix on nodemcu (2-byte codegen difference in the sketch TU), SH110X/ST7796S on esp32dev (`pio run` itself fails at `checkprogsize`).
+- For a library dialog: `searchLibraries(registryBase, query, { platform })`, `parsePlatformioIni`, `setLibDeps`, `serializeLibDep`.
+
 ## Building a pack
 
 Needs PlatformIO (`~/.platformio`, or `PLATFORMIO_CORE_DIR` / `PLATFORMIO_PACKAGES_DIR` / `PIO`; allowed libraries under `PACK_LIBS`, default `.build/pack-work/libs`) with the platforms of `pack/config.json` and the WebAssembly toolchains in `.build/toolchains/<toolchain>/{cc1plus,cc1,as,ld}.{js,wasm}` (built by `toolchains/*/Dockerfile`). Then:

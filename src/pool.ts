@@ -26,6 +26,7 @@ export type ToWorker =
           mkdirs?: string[];
           thisProgram: string;
           outputs?: string[];
+          env?: Record<string, string>;
       }
     | { type: "compile"; id: number; request: CompileRequest; options: WorkerCompileOptions }
     | { type: "prewarm"; id: number; board: string; options: WorkerCompileOptions };
@@ -40,6 +41,8 @@ export type FromWorker =
 /** The serialisable part of CompileOptions (+ the pool size for parallel TUs). */
 export interface WorkerCompileOptions {
     packBaseUrl: string;
+    /** Host route to the PlatformIO registry (see CompileOptions.registryBase), e.g. "/firmware-libs/". */
+    registryBase?: string;
     usePch?: boolean;
     cache?: boolean;
     cacheStorage?: boolean;
@@ -118,6 +121,7 @@ export function createWorkerPool(url: WorkerUrl, size: number): WorkerPool {
                 mkdirs: opts.mkdirs,
                 thisProgram: opts.thisProgram,
                 outputs: opts.outputs,
+                env: opts.env,
             };
             pw.tools.add(toolId);
             return new Promise((resolve, reject) => {

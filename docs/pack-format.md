@@ -184,6 +184,13 @@ library's `headers` selects that library; then add `deps` transitively. Include 
 and archives (`${LIBS}`) are emitted in manifest order restricted to the selected set (the builder
 writes the manifest in PlatformIO's order).
 
+### Registry libraries
+
+- `registry`: `{ platform, framework, libArchive, builtinNames, libdepsDir }` — the board's PlatformIO platform name, whether PlatformIO archives libraries (false on pioarduino), the names of every framework library of the image (owner-less dependencies with these names are never installed) and `.pio/libdeps/<env>`.
+- `compileAsm`: `{ S: { cc1, as }, s: { as } }` — PlatformIO's lines for preprocessed (`.S`) and plain (`.s`) assembler, from an extra probe run, templated like `compile`.
+- `headerIndex`: a FileRef to JSON `{ dirs: string[], files: [dirIndex, relPath, sha32, size][] }` — every header below the framework's include roots (the sketch line's non-library `-I` dirs, then the compiler's system dirs, in search order), each stored as `files/<sha32>.h`.
+- `LibraryEntry.owner`: the registry owner of a pack library (its `.piopm`), for matching `lib_deps` specs.
+
 ## LinkIndex (lazy linking, ESP32)
 
 ```ts
